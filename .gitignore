@@ -17,6 +17,12 @@
 /.next/
 /out/
 
+# runtime logs (launchd stdout/stderr)
+/logs/
+
+# local-only design assets (embed real Lark names/content — never push)
+/.local-assets/
+
 # production
 /build
 

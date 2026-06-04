@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Lark Reply Desk
 
-## Getting Started
+Local MVP cockpit for reviewing, editing, and sending the Lark draft daemon's
+suggested replies. Two panes: message list (left) + original thread above an
+editable draft (right). Mac/Notion-clean, dark-mode toggle.
 
-First, run the development server:
+It is a thin front-end over the existing `lark-draft-pusher` daemon. The UI
+NEVER calls lark-cli; the daemon (which holds the macOS keychain) executes
+sends. The UI only reads/writes JSONL state files.
+
+## Run it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+export PATH="/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin:$PATH"
+cd /Users/bryan.seto/lark-reply-desk
+PORT=3100 npm run dev      # http://localhost:3100
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+(Production: `npm run build && PORT=3100 npm run start`.)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How it connects to the daemon
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+State files in `/Users/bryan.seto/.hermes/profiles/bryan/state/`:
 
-## Learn More
+| File | Direction | Purpose |
+|---|---|---|
+| `lark-reply-desk-queue.jsonl` | UI reads | one row per drafted reply (`handle, chat_name, sender_name, thread_json[], draft_text, drafted_at, status`) |
+| `lark-reply-desk-commands.jsonl` | UI appends | `{id, handle, action:"send", sent_text}` — the daemon executes |
+| `lark-reply-desk-results.jsonl` | UI polls | `{id, handle, status:"sent"|"error", detail}` |
 
-To learn more about Next.js, take a look at the following resources:
+On send: the UI appends a command, polls results up to ~12s. If the daemon
+hasn't run its cycle yet, the UI shows "Queued" and the command still runs on
+the next daemon cycle. Every send writes a `(draft, sent_text, edited)` label to
+`lark-reply-labels.jsonl` — the ground-truth corpus for the send-grounded
+optimizer.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Files
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `app/page.tsx` — the two-pane UI (single client component)
+- `app/api/inbox/route.ts` — GET pending/sent drafts
+- `app/api/send/route.ts` — POST a send command, poll for the result
+- `lib/state.ts` — JSONL read/write helpers (server-only)
+- `app/globals.css` — Notion/Mac palette (one blue accent), light + dark
 
-## Deploy on Vercel
+## MVP scope (deliberate)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Two panes, single Needs-reply/Done toggle, one whisper line under the composer
+("matches your style" -> "edited - saved as your style signal"). No search,
+multi-account, snooze, "why this draft", or learning dashboard. The optimizer
+runs invisibly in the 03:00 friction loop.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Keyboard
+
+- `J`/`K` or arrows: move between drafts
+- `Cmd/Ctrl + Enter`: send
+- `◐` (top of sidebar): toggle dark mode (persists to localStorage)
