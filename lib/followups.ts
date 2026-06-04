@@ -8,6 +8,7 @@ const STATE_DIR = "/Users/bryan.seto/.hermes/profiles/bryan/state";
 export const FOLLOWUP_QUEUE_PATH = `${STATE_DIR}/lark-followup-queue.jsonl`;
 
 export type FollowupThreadMsg = { t: string; from: string; text: string; is_flagged?: boolean };
+export type RefineSource = { type: string; name: string; quote: string };
 export type FollowupRow = {
   handle: string;
   thread_id: string;
@@ -23,6 +24,15 @@ export type FollowupRow = {
   last_activity_days: number;
   last_from: string;
   waiting_state: "waiting_on_them" | "they_replied";
+  // thread summary + about (analyze_thread)
+  summary?: string;
+  about_subject?: string;
+  about_owner?: string;
+  // rule-based suggested follow-up date
+  suggested_date?: string;
+  suggested_label?: string;
+  suggested_reason?: string;
+  suggested_days_out?: number;
   thread_json: FollowupThreadMsg[];
   draft_text: string;
   drafted_at: number;

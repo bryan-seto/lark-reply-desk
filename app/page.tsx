@@ -15,6 +15,7 @@ type QueueRow = {
   status: "pending" | "sent";
   sent_text?: string;
 };
+type RefineSource = { type: string; name: string; quote: string };
 type FollowupRow = {
   handle: string;
   thread_id: string;
@@ -30,6 +31,13 @@ type FollowupRow = {
   last_activity_days: number;
   last_from: string;
   waiting_state: "waiting_on_them" | "they_replied";
+  summary?: string;
+  about_subject?: string;
+  about_owner?: string;
+  suggested_date?: string;
+  suggested_label?: string;
+  suggested_reason?: string;
+  suggested_days_out?: number;
   thread_json: ThreadMsg[];
   draft_text: string;
   drafted_at: number;
@@ -83,6 +91,15 @@ export default function Home() {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ---- refine-with-context state (Follow-up only) ----
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [refineInstr, setRefineInstr] = useState("");
+  const [useObsidian, setUseObsidian] = useState(true);
+  const [useMemory, setUseMemory] = useState(true);
+  const [refining, setRefining] = useState(false);
+  const [refineStatus, setRefineStatus] = useState("");
+  const [refineSources, setRefineSources] = useState<RefineSource[]>([]);
+
   const cur = rows.find((r) => r.handle === curHandle) || null;
   const fuCur = fuRows.find((r) => r.handle === fuHandle) || null;
   const edited = draft.trim() !== base.trim();
@@ -135,6 +152,46 @@ export default function Home() {
     setFuHandle(r.handle);
     setDraft(r.draft_text || "");
     setBase(r.draft_text || "");
+    // reset refine panel for the newly opened thread
+    setRefineOpen(false);
+    setRefineInstr("");
+    setRefineStatus("");
+    setRefineSources([]);
+  }
+
+  // Refine the current follow-up draft by letting Hermes read Obsidian + memory.
+  async function runRefine() {
+    if (refining || !fuCur) return;
+    setRefining(true);
+    setRefineSources([]);
+    setRefineStatus("reading your notes + memory…");
+    try {
+      const res = await fetch("/api/refine", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          handle: fuCur.handle,
+          instruction: refineInstr,
+          useObsidian,
+          useMemory,
+        }),
+      });
+      const r = await res.json();
+      if (r.ok && r.draft) {
+        setDraft(r.draft);
+        setRefineSources(r.sources || []);
+        setRefineStatus(r.status || "re-drafted with your context");
+      } else if (r.ok && !r.draft) {
+        setRefineSources(r.sources || []);
+        setRefineStatus(r.status || "no change suggested");
+      } else {
+        setRefineStatus(`couldn't refine: ${r.error || "unknown"}`);
+      }
+    } catch {
+      setRefineStatus("couldn't refine: network error");
+    } finally {
+      setRefining(false);
+    }
   }
 
   // load per mode + light polling
@@ -433,10 +490,30 @@ export default function Home() {
                     {r.chat_name}
                   </div>
                   <div className="line-clamp-2 pl-[30px] text-[12.5px] text-[var(--muted-foreground)]">
-                    <span className="text-[var(--faint)]">🚩 {pfx}: </span>
-                    {flaggedMsg?.text}
+                    {r.summary ? (
+                      r.summary
+                    ) : (
+                      <>
+                        <span className="text-[var(--faint)]">🚩 {pfx}: </span>
+                        {flaggedMsg?.text}
+                      </>
+                    )}
                   </div>
-                  <div className="pl-[30px] text-[10.5px] text-[var(--faint)]">{status}</div>
+                  <div className="flex flex-wrap items-center gap-1.5 pl-[30px] pt-0.5">
+                    {r.suggested_label && (
+                      <span
+                        className={
+                          "rounded-full px-2 py-0.5 text-[10px] font-semibold " +
+                          ((r.suggested_days_out ?? 9) <= 0
+                            ? "bg-[color-mix(in_srgb,var(--edited)_16%,transparent)] text-[var(--edited)]"
+                            : "bg-[var(--accent)] text-[var(--accent-foreground)]")
+                        }
+                      >
+                        ⏰ {r.suggested_label}
+                      </span>
+                    )}
+                    <span className="text-[10.5px] text-[var(--faint)]">{status}</span>
+                  </div>
                 </button>
               );
             })
@@ -469,12 +546,76 @@ export default function Home() {
             {/* thread */}
             <div className="flex flex-1 flex-col overflow-y-auto px-[26px] pb-2.5 pt-6">
               <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col">
+                {mode === "followup" && fuCur && (
+                  <div className="mb-4 flex flex-col gap-2.5">
+                    {/* with / about */}
+                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      <div className="rounded-[10px] border border-border bg-[var(--card)] px-3 py-2.5">
+                        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--faint)]">
+                          Follow up with
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="grid h-5 w-5 flex-none place-items-center rounded-md text-[9px] font-semibold text-white"
+                            style={{ background: colorFor(fuCur.person) }}
+                          >
+                            {initials(fuCur.person)}
+                          </span>
+                          <span className="text-[13.5px] font-semibold">{fuCur.person}</span>
+                        </div>
+                      </div>
+                      <div className="rounded-[10px] border border-border bg-[var(--card)] px-3 py-2.5">
+                        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--faint)]">
+                          About
+                        </div>
+                        <div className="text-[13px] font-semibold leading-snug">
+                          {fuCur.about_subject || "this flagged thread"}
+                        </div>
+                        {fuCur.about_owner && fuCur.about_owner !== fuCur.person && (
+                          <div className="mt-1 text-[11.5px] text-[var(--muted-foreground)]">
+                            ⚑ owner: <b className="font-semibold text-foreground">{fuCur.about_owner}</b>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* suggested follow-up date */}
+                    {fuCur.suggested_label && (
+                      <div className="flex items-center gap-3 rounded-[10px] border border-border border-l-[3px] border-l-[var(--primary)] bg-[var(--card)] px-3.5 py-2.5">
+                        <div className="grid h-[38px] w-[38px] flex-none place-items-center rounded-lg bg-[var(--accent)] text-[var(--accent-foreground)]">
+                          <span className="text-[15px] leading-none">⏰</span>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13.5px] font-semibold">
+                            Suggested follow-up:{" "}
+                            <span className="text-[var(--primary)]">{fuCur.suggested_label}</span>
+                          </div>
+                          {fuCur.suggested_reason && (
+                            <div className="mt-0.5 text-[11.5px] text-[var(--muted-foreground)]">
+                              {fuCur.suggested_reason}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* thread summary */}
+                    {fuCur.summary && (
+                      <div className="rounded-[10px] border border-border bg-[var(--card)] px-3.5 py-3">
+                        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--faint)]">
+                          ▦ Thread summary
+                        </div>
+                        <div className="text-[13px] leading-relaxed">{fuCur.summary}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--faint)]">
                   Full conversation
                 </p>
                 <p className="mb-4 text-[11.5px] text-[var(--faint)]">
                   {mode === "followup"
-                    ? "the whole flagged thread, every message timestamped"
+                    ? "the whole flagged thread, every message timestamped · 🚩 marks the message you flagged"
                     : "original thread"}
                 </p>
                 <div className="flex-1" />
@@ -548,6 +689,102 @@ export default function Home() {
                   className="w-full resize-none rounded-lg border border-border bg-background px-3.5 py-3 text-[14px] leading-[1.55] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)] disabled:opacity-70"
                   style={{ minHeight: 80 }}
                 />
+
+                {/* FEATURE 4: refine with my context (Follow-up only) */}
+                {mode === "followup" && (
+                  <div className="mt-2.5 overflow-hidden rounded-[10px] border border-border bg-[var(--card)]">
+                    <button
+                      onClick={() => setRefineOpen((o) => !o)}
+                      className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-[var(--hover)]"
+                    >
+                      <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-[var(--accent)] text-[13px] text-[var(--accent-foreground)]">
+                        ⌕
+                      </span>
+                      <span className="flex-1">
+                        <span className="block text-[13px] font-semibold">Refine with my context</span>
+                        <span className="block text-[11.5px] text-[var(--muted-foreground)]">
+                          let Hermes read my Obsidian notes + memory before re-drafting
+                        </span>
+                      </span>
+                      <span
+                        className="text-[var(--faint)] transition-transform"
+                        style={{ transform: refineOpen ? "rotate(180deg)" : "none" }}
+                      >
+                        ▾
+                      </span>
+                    </button>
+                    {refineOpen && (
+                      <div className="border-t border-border px-3 pb-3 pt-2.5">
+                        <input
+                          value={refineInstr}
+                          onChange={(e) => setRefineInstr(e.target.value)}
+                          placeholder="optional: what should I check? e.g. 'read my PRD on the airline filter'"
+                          className="mb-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)]"
+                        />
+                        <div className="mb-1.5 text-[11px] text-[var(--faint)]">Sources Hermes may read</div>
+                        <div className="mb-3 flex flex-wrap gap-2">
+                          <button
+                            onClick={() => setUseObsidian((v) => !v)}
+                            aria-pressed={useObsidian}
+                            className={
+                              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] " +
+                              (useObsidian
+                                ? "border-transparent bg-[var(--accent)] text-[var(--accent-foreground)]"
+                                : "border-border bg-background text-[var(--muted-foreground)]")
+                            }
+                          >
+                            📄 Obsidian notes
+                          </button>
+                          <button
+                            onClick={() => setUseMemory((v) => !v)}
+                            aria-pressed={useMemory}
+                            className={
+                              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] " +
+                              (useMemory
+                                ? "border-transparent bg-[var(--accent)] text-[var(--accent-foreground)]"
+                                : "border-border bg-background text-[var(--muted-foreground)]")
+                            }
+                          >
+                            🧠 My memory
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={runRefine}
+                            disabled={refining || (!useObsidian && !useMemory)}
+                            className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-3.5 py-2 text-[13px] font-semibold text-[var(--primary-foreground)] transition hover:brightness-110 disabled:opacity-50"
+                          >
+                            {refining ? "Reading…" : "⌕ Re-draft with context"}
+                          </button>
+                          {refineStatus && (
+                            <span className="text-[11.5px] text-[var(--faint)]">{refineStatus}</span>
+                          )}
+                        </div>
+                        {refineSources.length > 0 && (
+                          <div className="mt-3 rounded-lg border border-border bg-background px-3 py-2.5">
+                            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--good,#0f9d6b)]">
+                              ✓ Read {refineSources.length} source{refineSources.length > 1 ? "s" : ""}
+                            </div>
+                            {refineSources.map((s, i) => (
+                              <div key={i} className="flex items-start gap-2 py-0.5 text-[12px] text-[var(--muted-foreground)]">
+                                <span className="flex-none">{s.type === "memory" ? "🧠" : "📄"}</span>
+                                <span>
+                                  <span className="font-semibold text-foreground">{s.name}</span>
+                                  {s.quote && (
+                                    <span className="mt-0.5 block text-[11.5px] italic text-[var(--faint)]">
+                                      {s.quote}
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="mt-3 flex items-center gap-3">
                   {!(mode === "unread" && filter === "sent") && (
                     <button
