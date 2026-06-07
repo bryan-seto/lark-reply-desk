@@ -26,7 +26,7 @@ export type QueueRow = {
 export type SendResult = {
   id: string;
   handle: string;
-  status: "sent" | "error" | "queued";
+  status: "sent" | "error" | "queued" | "unflagged";
   detail?: string;
   ts?: number;
 };
@@ -75,6 +75,31 @@ export async function sendViaDaemon(
   const id = randomUUID();
   const cmd: Record<string, unknown> = { id, handle, action: "send", sent_text: sentText };
   if (queue) cmd.queue = queue;
+  await fs.appendFile(CMD_PATH, JSON.stringify(cmd) + "\n", "utf8");
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 700));
+    const results = await readJsonl<SendResult>(RESULTS_PATH);
+    const hit = results.find((r) => r.id === id);
+    if (hit) return hit;
+  }
+  return { id, handle, status: "queued", detail: "daemon will process on next cycle" };
+}
+
+// Append an unflag command for the daemon (action:"unflag"), optionally with a
+// note + a cross-reference link to a related chat. The daemon removes the Lark
+// bookmark (flag-cancel) and records the link locally. Mirrors sendViaDaemon's
+// append-then-poll shape. Unflag is ALWAYS explicit — never auto on a send.
+export async function unflagViaDaemon(
+  handle: string,
+  opts: { note?: string; link?: { chat_id: string; chat_name: string }; timeoutMs?: number } = {}
+): Promise<SendResult> {
+  const { note, link, timeoutMs = 90000 } = opts;
+  const id = randomUUID();
+  const cmd: Record<string, unknown> = { id, handle, action: "unflag" };
+  if (note) cmd.note = note;
+  if (link) cmd.link = link;
   await fs.appendFile(CMD_PATH, JSON.stringify(cmd) + "\n", "utf8");
 
   const deadline = Date.now() + timeoutMs;

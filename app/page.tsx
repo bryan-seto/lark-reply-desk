@@ -1,20 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type ThreadMsg = { t: string; from: string; text: string; is_flagged?: boolean };
-type QueueRow = {
-  handle: string;
-  chat_id: string;
-  chat_name: string;
-  sender_name: string;
-  parent_message_id: string;
-  thread_json: ThreadMsg[];
-  draft_text: string;
-  drafted_at: number;
-  status: "pending" | "sent";
-  sent_text?: string;
-};
 type RefineSource = { type: string; name: string; quote: string };
 type FollowupRow = {
   handle: string;
@@ -34,10 +22,21 @@ type FollowupRow = {
   summary?: string;
   about_subject?: string;
   about_owner?: string;
+  next_action?: string;
+  thread_incomplete?: boolean;
   suggested_date?: string;
   suggested_label?: string;
   suggested_reason?: string;
   suggested_days_out?: number;
+  suggested_from_commitment?: boolean;
+  timing_quote?: string;
+  followup_basis?: string;
+  is_monitoring?: boolean;
+  pending_fix?: boolean;
+  corrected?: boolean;
+  corrected_at?: number;
+  correction_note?: string;
+  correction_stale?: boolean;
   thread_json: ThreadMsg[];
   draft_text: string;
   drafted_at: number;
@@ -55,11 +54,6 @@ const initials = (n: string) =>
     .join("")
     .slice(0, 2)
     .toUpperCase();
-const fmtTime = (epoch: number) => {
-  if (!epoch) return "";
-  const d = new Date(epoch * 1000);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-};
 const COLORS = ["#2383e2", "#0f9d6b", "#cb912f", "#9333ea", "#0ea5e9", "#e0517a"];
 const colorFor = (s: string) => {
   let h = 0;
@@ -67,22 +61,54 @@ const colorFor = (s: string) => {
   return COLORS[Math.abs(h) % COLORS.length];
 };
 const ageLabel = (d: number) => (d <= 0 ? "today" : `${d}d`);
+const isRawId = (s?: string) => !!s && /^(oc_|om_|omt_)/.test(s);
+const prettyChat = (s?: string) => (!s || isRawId(s) ? "" : s);
 
-type Mode = "unread" | "followup";
+// Urgency = WHEN Bryan must act, derived from the suggested follow-up date
+// (suggested_days_out), NOT when the message was last sent. Lower rank = sooner.
+type Urgency = { rank: number; label: string; key: string };
+const urgencyOf = (r: FollowupRow): Urgency => {
+  const d = r.suggested_days_out ?? 99;
+  if (d < 0) return { rank: 0, label: "Overdue", key: "overdue" };
+  if (d === 0) return { rank: 1, label: "Today", key: "today" };
+  if (d === 1) return { rank: 2, label: "Tomorrow", key: "tomorrow" };
+  if (d <= 7) return { rank: 3, label: "This week", key: "week" };
+  return { rank: 4, label: "Later", key: "later" };
+};
+const URGENCY_COLOR: Record<string, string> = {
+  overdue: "var(--edited)",
+  today: "var(--primary)",
+  tomorrow: "#cb912f",
+  week: "#0f9d6b",
+  later: "var(--faint)",
+};
+// Sort by action-required date: urgency bucket, then exact days_out, then how
+// long it's been waiting (older waits break ties first).
+const sortFu = (rows: FollowupRow[]) =>
+  [...rows].sort(
+    (a, b) =>
+      urgencyOf(a).rank - urgencyOf(b).rank ||
+      (a.suggested_days_out ?? 99) - (b.suggested_days_out ?? 99) ||
+      (b.last_activity_days ?? 0) - (a.last_activity_days ?? 0)
+  );
+const actionLine = (r: FollowupRow) =>
+  r.thread_incomplete
+    ? "⚠ thread incomplete — re-harvest"
+    : r.next_action ||
+      (r.waiting_state === "waiting_on_them"
+        ? `Nudge ${r.person}`
+        : `${r.last_from} replied — a short reply closes this`);
 
 export default function Home() {
-  const [mode, setMode] = useState<Mode>("unread");
-
-  // ---- Unread (reply desk) state ----
-  const [filter, setFilter] = useState<"pending" | "sent">("pending");
-  const [rows, setRows] = useState<QueueRow[]>([]);
-  const [curHandle, setCurHandle] = useState<string | null>(null);
-
-  // ---- Follow-up state ----
   const [fuRows, setFuRows] = useState<FollowupRow[]>([]);
   const [fuHandle, setFuHandle] = useState<string | null>(null);
+  const fuHandleRef = useRef<string | null>(null);
+  useEffect(() => {
+    fuHandleRef.current = fuHandle;
+  }, [fuHandle]);
+  const [threadOpen, setThreadOpen] = useState(false);
 
-  // ---- shared composer ----
+  // composer
   const [draft, setDraft] = useState("");
   const [base, setBase] = useState("");
   const [sending, setSending] = useState(false);
@@ -91,7 +117,7 @@ export default function Home() {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ---- refine-with-context state (Follow-up only) ----
+  // refine-with-context
   const [refineOpen, setRefineOpen] = useState(false);
   const [refineInstr, setRefineInstr] = useState("");
   const [useObsidian, setUseObsidian] = useState(true);
@@ -100,44 +126,38 @@ export default function Home() {
   const [refineStatus, setRefineStatus] = useState("");
   const [refineSources, setRefineSources] = useState<RefineSource[]>([]);
 
-  const cur = rows.find((r) => r.handle === curHandle) || null;
+  // unflag + link-to-related-chat (Plan A)
+  const [unflagOpen, setUnflagOpen] = useState(false);
+  const [unflagNote, setUnflagNote] = useState("");
+  const [linkQuery, setLinkQuery] = useState("");
+  const [linkResults, setLinkResults] = useState<{ chat_id: string; name: string }[]>([]);
+  const [linkedChat, setLinkedChat] = useState<{ chat_id: string; chat_name: string } | null>(null);
+  const [unflagging, setUnflagging] = useState(false);
+
+  // inline correction + teach-the-model (Plan B)
+  const [fixOpen, setFixOpen] = useState(false);
+  const [fixDate, setFixDate] = useState("");
+  const [fixPerson, setFixPerson] = useState("");
+  const [fixNl, setFixNl] = useState("");
+  const [fixing, setFixing] = useState(false);
+  const [fixStatus, setFixStatus] = useState("");
+  const [fixLearned, setFixLearned] = useState("");
+
+  const sorted = useMemo(() => sortFu(fuRows), [fuRows]);
   const fuCur = fuRows.find((r) => r.handle === fuHandle) || null;
   const edited = draft.trim() !== base.trim();
 
-  // ---------- Unread loaders ----------
-  const load = useCallback(async (f: "pending" | "sent", keep?: string | null) => {
-    try {
-      const res = await fetch(`/api/inbox?status=${f}`, { cache: "no-store" });
-      const data: QueueRow[] = await res.json();
-      setRows(data);
-      const stillThere = keep && data.some((r) => r.handle === keep);
-      if (stillThere) return;
-      if (data.length) openRow(data[0]);
-      else {
-        setCurHandle(null);
-        setDraft("");
-        setBase("");
-      }
-    } catch {
-      setRows([]);
-    }
-  }, []);
-
-  function openRow(r: QueueRow) {
-    setCurHandle(r.handle);
-    setDraft(r.draft_text || "");
-    setBase(r.draft_text || "");
-  }
-
-  // ---------- Follow-up loaders ----------
   const loadFu = useCallback(async (keep?: string | null) => {
     try {
       const res = await fetch(`/api/followups?status=pending`, { cache: "no-store" });
       const data: FollowupRow[] = await res.json();
-      setFuRows(data);
+      setFuRows((prev) =>
+        JSON.stringify(prev) === JSON.stringify(data) ? prev : data
+      );
       const stillThere = keep && data.some((r) => r.handle === keep);
-      if (stillThere) return;
-      if (data.length) openFu(data[0]);
+      if (stillThere) return; // preserve selection + open draft
+      const top = sortFu(data)[0];
+      if (top) openFu(top);
       else {
         setFuHandle(null);
         setDraft("");
@@ -152,14 +172,26 @@ export default function Home() {
     setFuHandle(r.handle);
     setDraft(r.draft_text || "");
     setBase(r.draft_text || "");
-    // reset refine panel for the newly opened thread
+    setThreadOpen(false);
     setRefineOpen(false);
     setRefineInstr("");
     setRefineStatus("");
     setRefineSources([]);
+    // reset unflag popover
+    setUnflagOpen(false);
+    setUnflagNote("");
+    setLinkQuery("");
+    setLinkResults([]);
+    setLinkedChat(null);
+    // reset correction panel
+    setFixOpen(false);
+    setFixDate(r.suggested_date || "");
+    setFixPerson(r.person || "");
+    setFixNl("");
+    setFixStatus("");
+    setFixLearned("");
   }
 
-  // Refine the current follow-up draft by letting Hermes read Obsidian + memory.
   async function runRefine() {
     if (refining || !fuCur) return;
     setRefining(true);
@@ -194,21 +226,142 @@ export default function Home() {
     }
   }
 
-  // load per mode + light polling
+  // initial load + light polling (preserves selection via ref)
   useEffect(() => {
-    if (mode === "unread") {
-      load(filter, curHandle);
-      const iv = setInterval(() => load(filter, curHandle), 15000);
-      return () => clearInterval(iv);
-    } else {
-      loadFu(fuHandle);
-      const iv = setInterval(() => loadFu(fuHandle), 15000);
-      return () => clearInterval(iv);
-    }
+    loadFu(fuHandleRef.current);
+    const iv = setInterval(() => loadFu(fuHandleRef.current), 15000);
+    return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, filter]);
+  }, []);
 
-  // theme init
+  // debounced related-chat search for the unflag link picker
+  useEffect(() => {
+    if (!unflagOpen) return;
+    const q = linkQuery.trim();
+    if (q.length < 2) {
+      setLinkResults([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/followups/related?q=${encodeURIComponent(q)}`, {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        setLinkResults(Array.isArray(data) ? data : []);
+      } catch {
+        setLinkResults([]);
+      }
+    }, 320);
+    return () => clearTimeout(t);
+  }, [linkQuery, unflagOpen]);
+
+  // remove the current row from the rail + advance to next (shared by send + unflag)
+  function dropCurrentRow(handle: string) {
+    const remaining = fuRows.filter((x) => x.handle !== handle);
+    setFuRows(remaining);
+    const top = sortFu(remaining)[0];
+    if (top) openFu(top);
+    else {
+      setFuHandle(null);
+      setDraft("");
+      setBase("");
+    }
+    setTimeout(() => loadFu(null), 1500);
+  }
+
+  async function doUnflag() {
+    if (unflagging || !fuCur) return;
+    const activeHandle = fuCur.handle;
+    setUnflagging(true);
+    try {
+      const res = await fetch("/api/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          handle: activeHandle,
+          action: "unflag",
+          note: unflagNote,
+          link: linkedChat,
+        }),
+      });
+      const r = await res.json();
+      if (r.status === "unflagged") {
+        showToast(linkedChat ? "Unflagged · linked" : "Unflagged");
+        setUnflagOpen(false);
+        dropCurrentRow(activeHandle);
+      } else if (r.status === "queued") {
+        showToast("Queued — Lark will remove the flag within ~60s");
+        setUnflagOpen(false);
+        dropCurrentRow(activeHandle);   // remove from UI now; daemon handles Lark side
+      } else {
+        showToast(`Unflag failed: ${r.detail || "unknown"}`);
+      }
+    } catch {
+      showToast("Unflag failed: network");
+    } finally {
+      setUnflagging(false);
+    }
+  }
+
+  // apply a structured correction (quick chips / date / person), refresh in place
+  async function doCorrect(set: Record<string, string>, label: string) {
+    if (fixing || !fuCur) return;
+    const activeHandle = fuCur.handle;
+    setFixing(true);
+    setFixStatus(`applying: ${label}…`);
+    setFixLearned("");
+    try {
+      const res = await fetch("/api/followups/correct", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ handle: activeHandle, set }),
+      });
+      const r = await res.json();
+      if (r.ok) {
+        showToast("Fixed · Hermes will remember");
+        setFixStatus("");
+        await loadFu(activeHandle);
+      } else {
+        setFixStatus(`couldn't fix: ${r.error || "unknown"}`);
+      }
+    } catch {
+      setFixStatus("couldn't fix: network error");
+    } finally {
+      setFixing(false);
+    }
+  }
+
+  // free-text correction -> NL mode (one Claude turn distills fields + a lesson)
+  async function doCorrectNL() {
+    if (fixing || !fuCur || !fixNl.trim()) return;
+    const activeHandle = fuCur.handle;
+    setFixing(true);
+    setFixStatus("Hermes is reading your correction…");
+    setFixLearned("");
+    try {
+      const res = await fetch("/api/followups/correct", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ handle: activeHandle, nl: fixNl.trim() }),
+      });
+      const r = await res.json();
+      if (r.ok) {
+        showToast("Fixed · Hermes will remember");
+        setFixStatus("");
+        if (r.lesson) setFixLearned(String(r.lesson).replace(/^[-\s]+/, ""));
+        setFixNl("");
+        await loadFu(activeHandle);
+      } else {
+        setFixStatus(`couldn't fix: ${r.error || "unknown"}`);
+      }
+    } catch {
+      setFixStatus("couldn't fix: network error");
+    } finally {
+      setFixing(false);
+    }
+  }
+
   useEffect(() => {
     setDark(document.documentElement.classList.contains("dark"));
   }, []);
@@ -227,68 +380,41 @@ export default function Home() {
     toastTimer.current = setTimeout(() => setToast(""), 2600);
   }
 
-  // auto-grow textarea
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
-  }, [draft, curHandle, fuHandle, mode]);
+  }, [draft, fuHandle]);
 
-  // ---------- send (both modes) ----------
   async function send() {
-    if (sending) return;
-    const activeHandle = mode === "unread" ? cur?.handle : fuCur?.handle;
-    if (!activeHandle) return;
+    if (sending || !fuCur) return;
+    const activeHandle = fuCur.handle;
     setSending(true);
     try {
       const res = await fetch("/api/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          handle: activeHandle,
-          sent_text: draft,
-          ...(mode === "followup" ? { queue: "followup" } : {}),
-        }),
+        body: JSON.stringify({ handle: activeHandle, sent_text: draft, queue: "followup" }),
       });
       const r = await res.json();
-      if (r.status === "sent") {
-        showToast(
-          mode === "followup"
-            ? "Sent · flag kept"
-            : edited
-            ? "Sent · your edit was saved as a style signal"
-            : "Sent"
-        );
-      } else if (r.status === "queued") {
-        showToast("Queued · sends on the daemon's next cycle");
-      } else {
+      if (r.status === "sent") showToast("Sent · flag kept");
+      else if (r.status === "queued") showToast("Queued · sends on the daemon's next cycle");
+      else {
         showToast(`Send failed: ${r.detail || "unknown"}`);
         setSending(false);
         return;
       }
-      // optimistic: drop from list, advance
-      if (mode === "unread") {
-        const remaining = rows.filter((x) => x.handle !== activeHandle);
-        setRows(remaining);
-        if (remaining.length) openRow(remaining[0]);
-        else {
-          setCurHandle(null);
-          setDraft("");
-          setBase("");
-        }
-        setTimeout(() => load(filter, null), 1500);
-      } else {
-        const remaining = fuRows.filter((x) => x.handle !== activeHandle);
-        setFuRows(remaining);
-        if (remaining.length) openFu(remaining[0]);
-        else {
-          setFuHandle(null);
-          setDraft("");
-          setBase("");
-        }
-        setTimeout(() => loadFu(null), 1500);
+      const remaining = fuRows.filter((x) => x.handle !== activeHandle);
+      setFuRows(remaining);
+      const top = sortFu(remaining)[0];
+      if (top) openFu(top);
+      else {
+        setFuHandle(null);
+        setDraft("");
+        setBase("");
       }
+      setTimeout(() => loadFu(null), 1500);
     } catch {
       showToast("Send failed: network");
     } finally {
@@ -296,7 +422,7 @@ export default function Home() {
     }
   }
 
-  // keyboard nav
+  // keyboard nav over the sorted rail
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -306,392 +432,538 @@ export default function Home() {
       }
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "TEXTAREA" || tag === "INPUT") return;
-      const list = mode === "unread" ? rows : fuRows;
-      const handle = mode === "unread" ? curHandle : fuHandle;
-      const open = mode === "unread" ? (r: QueueRow | FollowupRow) => openRow(r as QueueRow) : (r: QueueRow | FollowupRow) => openFu(r as FollowupRow);
-      const i = list.findIndex((r) => r.handle === handle);
+      const i = sorted.findIndex((r) => r.handle === fuHandle);
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
-        const n = list[Math.min(list.length - 1, i + 1)];
-        if (n) open(n);
+        const n = sorted[Math.min(sorted.length - 1, i + 1)];
+        if (n) openFu(n);
       }
       if (e.key === "k" || e.key === "ArrowUp") {
         e.preventDefault();
-        const p = list[Math.max(0, i - 1)];
-        if (p) open(p);
+        const p = sorted[Math.max(0, i - 1)];
+        if (p) openFu(p);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, fuRows, curHandle, fuHandle, draft, sending, mode]);
+  }, [sorted, fuHandle, draft, sending]);
 
-  const tabCount = mode === "unread" ? (filter === "pending" ? rows.length : null) : fuRows.length;
+  const headerSub = fuCur
+    ? prettyChat(fuCur.chat_name)
+      ? `${prettyChat(fuCur.chat_name)} · flagged`
+      : "flagged"
+    : "";
 
-  // active thread + header for the content pane
-  const activeThread = mode === "unread" ? cur : fuCur;
-  const headerName = mode === "unread" ? cur?.sender_name : fuCur?.person;
-  const headerSub =
-    mode === "unread"
-      ? cur
-        ? `from ${cur.sender_name}`
-        : ""
-      : fuCur
-      ? `${fuCur.chat_name} · flagged`
-      : "";
+  // counts for the rail header (how many need action now)
+  const dueNow = fuRows.filter((r) => (r.suggested_days_out ?? 99) <= 0).length;
 
   return (
-    <div className="grid h-screen w-screen grid-cols-[320px_1fr] overflow-hidden">
-      {/* SIDEBAR */}
-      <aside className="flex min-h-0 flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar)]">
-        {/* top-level mode tabs */}
-        <div className="flex items-center gap-2 px-3.5 pb-1 pt-3">
-          <div className="inline-flex flex-1 rounded-[7px] bg-[var(--hover)] p-0.5">
-            {(["unread", "followup"] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                aria-pressed={mode === m}
-                className={
-                  "flex flex-1 items-center justify-center gap-1.5 rounded-[5px] px-3 py-1 text-[12.5px] font-semibold transition-colors " +
-                  (mode === m
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-[var(--muted-foreground)]")
-                }
-              >
-                {m === "unread" ? "Unread" : "Follow-ups"}
-                {m === "followup" && fuRows.length > 0 && (
-                  <span className="rounded-full bg-[var(--hover)] px-1.5 text-[10.5px] text-[var(--muted-foreground)]">
-                    {fuRows.length}
-                  </span>
-                )}
-              </button>
-            ))}
+    <>
+      <div className="grid h-screen w-screen grid-cols-[380px_1fr] overflow-hidden">
+        {/* LEFT RAIL — triage by action-required date */}
+        <aside className="flex min-h-0 flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar)]">
+          <div className="flex items-center gap-2 border-b border-[var(--sidebar-border)] px-4 py-3">
+            <span className="text-[15px] font-semibold">Flagged</span>
+            <span className="rounded-full bg-[var(--hover)] px-1.5 py-0.5 text-[10.5px] text-[var(--muted-foreground)]">
+              {fuRows.length}
+            </span>
+            {dueNow > 0 && (
+              <span className="rounded-full bg-[color-mix(in_srgb,var(--primary)_16%,transparent)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--primary)]">
+                {dueNow} due now
+              </span>
+            )}
+            <button
+              onClick={toggleTheme}
+              title="Toggle theme"
+              className="ml-auto rounded-md p-1 text-[15px] leading-none text-[var(--faint)] hover:bg-[var(--hover)] hover:text-foreground"
+            >
+              ◐
+            </button>
           </div>
-          <button
-            onClick={toggleTheme}
-            title="Toggle theme"
-            className="rounded-md p-1 text-[15px] leading-none text-[var(--faint)] hover:bg-[var(--hover)] hover:text-foreground"
-          >
-            ◐
-          </button>
-        </div>
+          <div className="px-4 pb-1.5 pt-2 text-[11px] text-[var(--faint)]">
+            sorted by when you need to act
+          </div>
 
-        {/* sub-header line */}
-        {mode === "unread" ? (
-          <div className="mx-3.5 mb-2 mt-1 inline-flex rounded-[7px] bg-[var(--hover)] p-0.5">
-            {(["pending", "sent"] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                aria-pressed={filter === f}
-                className={
-                  "flex-1 rounded-[5px] px-3 py-1 text-[12px] font-medium transition-colors " +
-                  (filter === f
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-[var(--muted-foreground)]")
-                }
-              >
-                {f === "pending" ? "Needs reply" : "Done"}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="px-[18px] pb-2 pt-1.5">
-            <div className="text-[11px] text-[var(--faint)]">
-              flagged threads · latest activity first
-            </div>
-          </div>
-        )}
-
-        {/* list */}
-        <div className="flex-1 overflow-y-auto px-2 pb-3 pt-0.5">
-          {mode === "unread" ? (
-            rows.length === 0 ? (
-              <div className="px-3.5 py-8 text-center text-[13px] text-[var(--faint)]">
-                {filter === "pending" ? "No drafts waiting." : "Nothing sent yet."}
+          <div className="flex-1 overflow-y-auto px-2 pb-3">
+            {sorted.length === 0 ? (
+              <div className="px-3.5 py-10 text-center text-[13px] text-[var(--faint)]">
+                No flagged threads. Refreshes in the background.
               </div>
             ) : (
-              rows.map((r) => (
-                <button
-                  key={r.handle}
-                  onClick={() => openRow(r)}
-                  aria-current={r.handle === curHandle}
-                  className={
-                    "mb-px grid w-full gap-[3px] rounded-lg px-2.5 py-[9px] text-left transition-colors " +
-                    (r.handle === curHandle ? "bg-[var(--accent)]" : "hover:bg-[var(--hover)]")
-                  }
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="grid h-[22px] w-[22px] flex-none place-items-center rounded-md text-[10px] font-semibold text-white"
-                      style={{ background: colorFor(r.sender_name) }}
-                    >
-                      {initials(r.sender_name)}
-                    </span>
-                    <span className="truncate text-[13.5px] font-medium">{r.sender_name}</span>
-                    {r.status === "pending" && (
-                      <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--primary)]" />
-                    )}
-                    <span className="ml-auto whitespace-nowrap text-[11px] text-[var(--faint)]">
-                      {fmtTime(r.drafted_at)}
-                    </span>
-                  </div>
-                  <div className="truncate pl-[30px] text-[11px] text-[var(--faint)]">
-                    {r.chat_name}
-                  </div>
-                  <div className="line-clamp-2 pl-[30px] text-[12.5px] text-[var(--muted-foreground)]">
-                    {r.draft_text}
-                  </div>
-                </button>
-              ))
-            )
-          ) : fuRows.length === 0 ? (
-            <div className="px-3.5 py-8 text-center text-[13px] text-[var(--faint)]">
-              No flagged follow-ups. Harvest runs weekday mornings.
-            </div>
-          ) : (
-            fuRows.map((r) => {
-              const flaggedMsg =
-                r.thread_json.find((m) => m.is_flagged) ||
-                r.thread_json[r.thread_json.length - 1];
-              const pfx = flaggedMsg
-                ? isBryan(flaggedMsg.from)
-                  ? "You"
-                  : flaggedMsg.from
-                : "";
-              const status =
-                r.waiting_state === "waiting_on_them"
-                  ? `waiting · ${ageLabel(r.last_activity_days)}`
-                  : `they replied · ${ageLabel(r.last_activity_days)}`;
-              return (
-                <button
-                  key={r.handle}
-                  onClick={() => openFu(r)}
-                  aria-current={r.handle === fuHandle}
-                  className={
-                    "mb-px grid w-full gap-[3px] rounded-lg px-2.5 py-[9px] text-left transition-colors " +
-                    (r.handle === fuHandle ? "bg-[var(--accent)]" : "hover:bg-[var(--hover)]")
-                  }
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="grid h-[22px] w-[22px] flex-none place-items-center rounded-md text-[10px] font-semibold text-white"
-                      style={{ background: colorFor(r.person) }}
-                    >
-                      {initials(r.person)}
-                    </span>
-                    <span className="truncate text-[13.5px] font-medium">{r.person}</span>
-                    <span className="ml-auto whitespace-nowrap text-[11px] text-[var(--faint)]">
-                      {ageLabel(r.last_activity_days)}
-                    </span>
-                  </div>
-                  <div className="truncate pl-[30px] text-[11px] text-[var(--faint)]">
-                    {r.chat_name}
-                  </div>
-                  <div className="line-clamp-2 pl-[30px] text-[12.5px] text-[var(--muted-foreground)]">
-                    {r.summary ? (
-                      r.summary
-                    ) : (
-                      <>
-                        <span className="text-[var(--faint)]">🚩 {pfx}: </span>
-                        {flaggedMsg?.text}
-                      </>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 pl-[30px] pt-0.5">
-                    {r.suggested_label && (
-                      <span
+              (() => {
+                let lastBucket = "";
+                return sorted.map((r) => {
+                  const u = urgencyOf(r);
+                  const showHeader = u.key !== lastBucket;
+                  lastBucket = u.key;
+                  const selected = r.handle === fuHandle;
+                  return (
+                    <div key={r.handle}>
+                      {showHeader && (
+                        <div className="mb-1 mt-3 flex items-center gap-1.5 px-2 first:mt-1">
+                          <span
+                            className="h-1.5 w-1.5 rounded-full"
+                            style={{ background: URGENCY_COLOR[u.key] }}
+                          />
+                          <span
+                            className="text-[10.5px] font-bold uppercase tracking-wider"
+                            style={{ color: URGENCY_COLOR[u.key] }}
+                          >
+                            {u.label}
+                          </span>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => openFu(r)}
+                        aria-current={selected}
                         className={
-                          "rounded-full px-2 py-0.5 text-[10px] font-semibold " +
-                          ((r.suggested_days_out ?? 9) <= 0
-                            ? "bg-[color-mix(in_srgb,var(--edited)_16%,transparent)] text-[var(--edited)]"
-                            : "bg-[var(--accent)] text-[var(--accent-foreground)]")
+                          "mb-px grid w-full gap-[2px] rounded-lg px-2.5 py-2 text-left transition-colors " +
+                          (selected ? "bg-[var(--accent)]" : "hover:bg-[var(--hover)]")
                         }
                       >
-                        ⏰ {r.suggested_label}
-                      </span>
-                    )}
-                    <span className="text-[10.5px] text-[var(--faint)]">{status}</span>
-                  </div>
-                </button>
-              );
-            })
-          )}
-        </div>
-      </aside>
-
-      {/* CONTENT */}
-      <main className="flex min-h-0 flex-col">
-        {activeThread ? (
-          <>
-            <div className="flex items-center gap-3 border-b border-border px-[26px] py-4">
-              <span
-                className="grid h-[30px] w-[30px] place-items-center rounded-lg text-[12px] font-semibold text-white"
-                style={{ background: colorFor(headerName || "") }}
-              >
-                {initials(headerName || "")}
-              </span>
-              <div>
-                <div className="text-[15px] font-semibold">
-                  {mode === "unread" ? cur?.chat_name : fuCur?.person}
-                </div>
-                <div className="text-[12px] text-[var(--muted-foreground)]">{headerSub}</div>
-              </div>
-              {mode === "followup" && (
-                <span className="ml-auto text-[11.5px] text-[var(--faint)]">flag kept on send</span>
-              )}
-            </div>
-
-            {/* thread */}
-            <div className="flex flex-1 flex-col overflow-y-auto px-[26px] pb-2.5 pt-6">
-              <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col">
-                {mode === "followup" && fuCur && (
-                  <div className="mb-4 flex flex-col gap-2.5">
-                    {/* with / about */}
-                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                      <div className="rounded-[10px] border border-border bg-[var(--card)] px-3 py-2.5">
-                        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--faint)]">
-                          Follow up with
-                        </div>
                         <div className="flex items-center gap-2">
                           <span
-                            className="grid h-5 w-5 flex-none place-items-center rounded-md text-[9px] font-semibold text-white"
+                            className="grid h-[20px] w-[20px] flex-none place-items-center rounded-md text-[9px] font-semibold text-white"
+                            style={{ background: colorFor(r.person) }}
+                          >
+                            {initials(r.person)}
+                          </span>
+                          <span className="truncate text-[13px] font-semibold">{r.person}</span>
+                          {r.suggested_label && (
+                            <span
+                              className="ml-auto whitespace-nowrap text-[10.5px] font-semibold"
+                              style={{ color: URGENCY_COLOR[u.key] }}
+                            >
+                              {r.suggested_label}
+                            </span>
+                          )}
+                        </div>
+                        <div className="truncate pl-[28px] text-[12.5px] font-medium">
+                          {r.about_subject || r.summary || "Flagged thread"}
+                        </div>
+                        <div className="truncate pl-[28px] text-[11.5px] text-[var(--muted-foreground)]">
+                          {actionLine(r)}
+                        </div>
+                      </button>
+                    </div>
+                  );
+                });
+              })()
+            )}
+          </div>
+        </aside>
+
+        {/* RIGHT — full brief + thread + composer for the selected item */}
+        <main className="flex min-h-0 flex-col">
+          {fuCur ? (
+            <>
+              <div className="flex items-center gap-3 border-b border-border px-[26px] py-4">
+                <span
+                  className="grid h-[30px] w-[30px] place-items-center rounded-lg text-[12px] font-semibold text-white"
+                  style={{ background: colorFor(fuCur.person) }}
+                >
+                  {initials(fuCur.person)}
+                </span>
+                <div>
+                  <div className="text-[15px] font-semibold">{fuCur.person}</div>
+                  <div className="text-[12px] text-[var(--muted-foreground)]">{headerSub}</div>
+                </div>
+                <span className="ml-auto text-[11.5px] text-[var(--faint)]">flag kept on send</span>
+              </div>
+
+              <div className="flex flex-1 flex-col overflow-y-auto px-[26px] pb-2.5 pt-6">
+                <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col">
+                  {/* BRIEF-FIRST card */}
+                  <div className="mb-3 flex flex-col gap-2.5">
+                    <div className="rounded-[12px] border border-border bg-[var(--card)] px-4 py-3.5">
+                      <div className="mb-1 flex items-start gap-2">
+                        <span className="mt-0.5 text-[14px] leading-none">🚩</span>
+                        <h2 className="flex-1 text-[16px] font-semibold leading-snug">
+                          {fuCur.about_subject || fuCur.summary
+                            ? fuCur.about_subject || "Flagged follow-up"
+                            : `Follow-up with ${fuCur.person}`}
+                        </h2>
+                        <button
+                          onClick={() => {
+                            setFixOpen((o) => !o);
+                            setUnflagOpen(false);
+                          }}
+                          className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--primary)]"
+                          title="Fix this — correct the status, date, or what-to-do (Hermes learns from it)"
+                        >
+                          ✎ Fix this
+                        </button>
+                        <button
+                          onClick={() => {
+                            setUnflagOpen((o) => !o);
+                            setFixOpen(false);
+                          }}
+                          className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--edited)]"
+                          title="Unflag — remove the Lark bookmark"
+                        >
+                          ⚑ Unflag
+                        </button>
+                      </div>
+
+                      {/* state badges + corrected chip */}
+                      {(fuCur.is_monitoring || fuCur.pending_fix || fuCur.corrected) && (
+                        <div className="mb-2 flex flex-wrap items-center gap-1.5 pl-[22px]">
+                          {fuCur.is_monitoring && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--primary)_14%,transparent)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--primary)]">
+                              📈 monitoring
+                            </span>
+                          )}
+                          {fuCur.pending_fix && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--edited)_15%,transparent)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--edited)]">
+                              ⏳ fix pending
+                            </span>
+                          )}
+                          {fuCur.corrected && (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full bg-[var(--hover)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--muted-foreground)]"
+                              title={fuCur.correction_note || "you corrected this — Hermes will keep it across re-harvests"}
+                            >
+                              ✓ you corrected this{fuCur.correction_stale ? " · thread changed since" : ""}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {fuCur.summary ? (
+                        <p className="mb-2.5 text-[13.5px] leading-relaxed text-[var(--muted-foreground)]">
+                          {fuCur.summary}
+                        </p>
+                      ) : fuCur.thread_incomplete ? (
+                        <p className="mb-2.5 flex items-center gap-1.5 text-[12.5px] text-[var(--edited)]">
+                          ⚠ thread incomplete — re-harvest to rebuild this brief
+                        </p>
+                      ) : (
+                        <p className="mb-2.5 text-[12.5px] italic text-[var(--faint)]">
+                          no summary yet — re-harvest to generate one
+                        </p>
+                      )}
+
+                      {/* What to do */}
+                      <div className="mb-3 flex items-start gap-2 rounded-[8px] bg-[var(--accent)] px-3 py-2">
+                        <span className="mt-px text-[12px] leading-none text-[var(--accent-foreground)]">→</span>
+                        <div className="text-[13px] font-medium leading-snug text-[var(--accent-foreground)]">
+                          {fuCur.next_action
+                            ? fuCur.next_action
+                            : fuCur.waiting_state === "waiting_on_them"
+                            ? `Nudge ${fuCur.person} — no reply for ${ageLabel(fuCur.last_activity_days)}.`
+                            : `${fuCur.last_from} replied — a short reply closes this.`}
+                        </div>
+                      </div>
+
+                      {/* When to follow up + why */}
+                      {fuCur.suggested_label && (
+                        <div
+                          className={
+                            "mb-3 flex items-start gap-2 rounded-[8px] border px-3 py-2 " +
+                            (fuCur.suggested_from_commitment
+                              ? "border-[var(--primary)] bg-[color-mix(in_srgb,var(--primary)_8%,transparent)]"
+                              : "border-border bg-[var(--card)]")
+                          }
+                        >
+                          <span className="mt-px text-[12px] leading-none">⏰</span>
+                          <div className="min-w-0 text-[12.5px] leading-snug">
+                            <span className="font-semibold">Follow up: {fuCur.suggested_label}</span>
+                            {fuCur.suggested_from_commitment && (
+                              <span className="ml-1.5 rounded-full bg-[var(--primary)] px-1.5 py-px text-[9.5px] font-semibold text-[var(--primary-foreground)]">
+                                from their msg
+                              </span>
+                            )}
+                            {fuCur.suggested_reason && (
+                              <div className="mt-0.5 text-[var(--muted-foreground)]">
+                                {fuCur.suggested_reason}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* meta row */}
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--faint)]">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="grid h-4 w-4 flex-none place-items-center rounded text-[8px] font-semibold text-white"
                             style={{ background: colorFor(fuCur.person) }}
                           >
                             {initials(fuCur.person)}
                           </span>
-                          <span className="text-[13.5px] font-semibold">{fuCur.person}</span>
-                        </div>
-                      </div>
-                      <div className="rounded-[10px] border border-border bg-[var(--card)] px-3 py-2.5">
-                        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--faint)]">
-                          About
-                        </div>
-                        <div className="text-[13px] font-semibold leading-snug">
-                          {fuCur.about_subject || "this flagged thread"}
-                        </div>
+                          {fuCur.person}
+                        </span>
+                        <span>·</span>
+                        <span
+                          style={{
+                            color:
+                              fuCur.waiting_state === "waiting_on_them" ? "var(--edited)" : undefined,
+                          }}
+                        >
+                          {fuCur.waiting_state === "waiting_on_them"
+                            ? `waiting ${ageLabel(fuCur.last_activity_days)}`
+                            : `they replied · ${ageLabel(fuCur.last_activity_days)}`}
+                        </span>
                         {fuCur.about_owner && fuCur.about_owner !== fuCur.person && (
-                          <div className="mt-1 text-[11.5px] text-[var(--muted-foreground)]">
-                            ⚑ owner: <b className="font-semibold text-foreground">{fuCur.about_owner}</b>
-                          </div>
+                          <>
+                            <span>·</span>
+                            <span>
+                              owner: <b className="font-semibold text-foreground">{fuCur.about_owner}</b>
+                            </span>
+                          </>
                         )}
                       </div>
                     </div>
+                  </div>
 
-                    {/* suggested follow-up date */}
-                    {fuCur.suggested_label && (
-                      <div className="flex items-center gap-3 rounded-[10px] border border-border border-l-[3px] border-l-[var(--primary)] bg-[var(--card)] px-3.5 py-2.5">
-                        <div className="grid h-[38px] w-[38px] flex-none place-items-center rounded-lg bg-[var(--accent)] text-[var(--accent-foreground)]">
-                          <span className="text-[15px] leading-none">⏰</span>
+                  {/* Correction panel (✎ Fix this) — judgment-shaped chips + teach-Hermes free text */}
+                  {fixOpen && (
+                    <div className="mb-3 rounded-[12px] border border-[var(--primary)] bg-[color-mix(in_srgb,var(--primary)_5%,transparent)] px-4 py-3.5">
+                      <div className="mb-2 text-[12px] font-semibold text-[var(--primary)]">
+                        Fix this follow-up
+                      </div>
+                      <div className="mb-1.5 text-[11px] text-[var(--faint)]">Quick fixes (one tap)</div>
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        <button
+                          disabled={fixing}
+                          onClick={() => doCorrect({ pending_fix: "1", waiting_state: "waiting_on_them" }, "still pending")}
+                          className="rounded-full border border-border bg-background px-2.5 py-1 text-[11.5px] hover:border-[var(--edited)] hover:text-[var(--edited)] disabled:opacity-50"
+                        >
+                          ⏳ Still pending
+                        </button>
+                        <button
+                          disabled={fixing}
+                          onClick={() => doCorrect({ is_monitoring: "1" }, "it's a monitor")}
+                          className="rounded-full border border-border bg-background px-2.5 py-1 text-[11.5px] hover:border-[var(--primary)] hover:text-[var(--primary)] disabled:opacity-50"
+                        >
+                          📈 It&apos;s a monitor (due today)
+                        </button>
+                        <button
+                          disabled={fixing}
+                          onClick={() => doCorrect({ followup_basis: "closed" }, "resolved")}
+                          className="rounded-full border border-border bg-background px-2.5 py-1 text-[11.5px] hover:border-[#0f9d6b] hover:text-[#0f9d6b] disabled:opacity-50"
+                        >
+                          ✅ Actually resolved
+                        </button>
+                      </div>
+
+                      {/* wrong date / wrong person */}
+                      <div className="mb-3 flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] text-[var(--faint)]">📅 Wrong date</span>
+                        <input
+                          type="date"
+                          value={fixDate}
+                          onChange={(e) => setFixDate(e.target.value)}
+                          className="rounded-md border border-border bg-background px-2 py-1 text-[12px] outline-none focus:border-[var(--primary)]"
+                        />
+                        <button
+                          disabled={fixing || !fixDate}
+                          onClick={() => doCorrect({ suggested_date: fixDate }, "date")}
+                          className="rounded-md bg-[var(--hover)] px-2 py-1 text-[11.5px] font-medium hover:brightness-95 disabled:opacity-50"
+                        >
+                          set
+                        </button>
+                        <span className="ml-2 text-[11px] text-[var(--faint)]">👤 Person</span>
+                        <input
+                          value={fixPerson}
+                          onChange={(e) => setFixPerson(e.target.value)}
+                          className="w-28 rounded-md border border-border bg-background px-2 py-1 text-[12px] outline-none focus:border-[var(--primary)]"
+                        />
+                        <button
+                          disabled={fixing || !fixPerson.trim()}
+                          onClick={() => doCorrect({ person: fixPerson.trim() }, "person")}
+                          className="rounded-md bg-[var(--hover)] px-2 py-1 text-[11.5px] font-medium hover:brightness-95 disabled:opacity-50"
+                        >
+                          set
+                        </button>
+                      </div>
+
+                      {/* teach Hermes free text */}
+                      <div className="mb-1.5 text-[11px] text-[var(--faint)]">
+                        Tell Hermes what&apos;s wrong (it learns the rule for next time)
+                      </div>
+                      <textarea
+                        value={fixNl}
+                        onChange={(e) => setFixNl(e.target.value)}
+                        placeholder="e.g. when someone says 'I'll handle it' but the bug isn't confirmed fixed, that's still pending, not resolved"
+                        className="mb-2 w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-[13px] leading-snug outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)]"
+                        style={{ minHeight: 56 }}
+                      />
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={doCorrectNL}
+                          disabled={fixing || !fixNl.trim()}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-3.5 py-2 text-[13px] font-semibold text-[var(--primary-foreground)] transition hover:brightness-110 disabled:opacity-50"
+                        >
+                          {fixing ? "Working…" : "✦ Fix & teach"}
+                        </button>
+                        {fixStatus && <span className="text-[11.5px] text-[var(--faint)]">{fixStatus}</span>}
+                      </div>
+                      {fixLearned && (
+                        <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-[#0f9d6b] bg-[color-mix(in_srgb,#0f9d6b_8%,transparent)] px-3 py-2 text-[12px] text-foreground">
+                          <span className="mt-px flex-none">🧠</span>
+                          <span>
+                            <b className="font-semibold">Learned:</b> {fixLearned}
+                          </span>
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[13.5px] font-semibold">
-                            Suggested follow-up:{" "}
-                            <span className="text-[var(--primary)]">{fuCur.suggested_label}</span>
-                          </div>
-                          {fuCur.suggested_reason && (
-                            <div className="mt-0.5 text-[11.5px] text-[var(--muted-foreground)]">
-                              {fuCur.suggested_reason}
+                      )}
+                    </div>
+                  )}
+
+                  {/* Unflag popover (⚑ Unflag) — quiet, deliberate, on-page */}
+                  {unflagOpen && (
+                    <div className="mb-3 rounded-[12px] border border-[var(--edited)] bg-[color-mix(in_srgb,var(--edited)_5%,transparent)] px-4 py-3.5">
+                      <div className="mb-1 text-[12px] font-semibold text-[var(--edited)]">Unflag this thread</div>
+                      <div className="mb-2.5 text-[11.5px] text-[var(--muted-foreground)]">
+                        Removes the Lark bookmark. If you link a chat, it&apos;s saved as a cross-reference so you know where this moved.
+                      </div>
+                      <input
+                        value={unflagNote}
+                        onChange={(e) => setUnflagNote(e.target.value)}
+                        placeholder="optional: why are you unflagging? (e.g. moved to the airline-filter group)"
+                        className="mb-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-[var(--edited)]"
+                      />
+                      {linkedChat ? (
+                        <div className="mb-2.5 inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)] px-2.5 py-1 text-[12px] text-[var(--accent-foreground)]">
+                          🔗 {linkedChat.chat_name}
+                          <button
+                            onClick={() => setLinkedChat(null)}
+                            className="ml-0.5 rounded-full px-1 hover:bg-[color-mix(in_srgb,var(--edited)_20%,transparent)]"
+                            title="Remove link"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mb-2.5">
+                          <input
+                            value={linkQuery}
+                            onChange={(e) => setLinkQuery(e.target.value)}
+                            placeholder="link to another chat — search by group name (optional)"
+                            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-[var(--primary)]"
+                          />
+                          {linkResults.length > 0 && (
+                            <div className="mt-1 overflow-hidden rounded-lg border border-border bg-background">
+                              {linkResults.map((c) => (
+                                <button
+                                  key={c.chat_id}
+                                  onClick={() => {
+                                    setLinkedChat({ chat_id: c.chat_id, chat_name: c.name });
+                                    setLinkResults([]);
+                                    setLinkQuery("");
+                                  }}
+                                  className="block w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-[var(--hover)]"
+                                >
+                                  {c.name}
+                                </button>
+                              ))}
                             </div>
                           )}
                         </div>
+                      )}
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={doUnflag}
+                          disabled={unflagging}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[var(--edited)] px-3.5 py-2 text-[13px] font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
+                        >
+                          {unflagging ? "Unflagging…" : "⚑ Unflag"}
+                        </button>
+                        <button
+                          onClick={() => setUnflagOpen(false)}
+                          className="rounded-lg px-3 py-2 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover)]"
+                        >
+                          Cancel
+                        </button>
                       </div>
-                    )}
-
-                    {/* thread summary */}
-                    {fuCur.summary && (
-                      <div className="rounded-[10px] border border-border bg-[var(--card)] px-3.5 py-3">
-                        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--faint)]">
-                          ▦ Thread summary
-                        </div>
-                        <div className="text-[13px] leading-relaxed">{fuCur.summary}</div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--faint)]">
-                  Full conversation
-                </p>
-                <p className="mb-4 text-[11.5px] text-[var(--faint)]">
-                  {mode === "followup"
-                    ? "the whole flagged thread, every message timestamped · 🚩 marks the message you flagged"
-                    : "original thread"}
-                </p>
-                <div className="flex-1" />
-                {(activeThread.thread_json || []).map((b, i) => {
-                  const me = isBryan(b.from);
-                  const flagged = mode === "followup" && b.is_flagged;
-                  return (
-                    <div key={i} className={"mb-4 max-w-[82%] " + (me ? "ml-auto" : "")}>
-                      <div
-                        className={
-                          "mb-1 flex items-center gap-2 " + (me ? "justify-end" : "")
-                        }
-                      >
-                        {flagged && (
-                          <span className="rounded-full bg-[var(--primary)] px-1.5 py-px text-[9.5px] font-semibold text-[var(--primary-foreground)]">
-                            🚩 flagged
-                          </span>
-                        )}
-                        <span className="text-[12px] font-medium text-[var(--muted-foreground)]">
-                          {me ? "You" : b.from}
-                        </span>
-                        <span className="text-[10.5px] tabular-nums text-[var(--faint)]">{b.t}</span>
-                      </div>
-                      <span
-                        className={
-                          "inline-block whitespace-pre-wrap px-[13px] py-[9px] text-[13.5px] " +
-                          (me
-                            ? "rounded-[14px_4px_14px_14px] bg-[var(--accent)]"
-                            : "rounded-[4px_14px_14px_14px] bg-[var(--hover)]") +
-                          (flagged
-                            ? " ring-2 ring-[var(--primary)] ring-offset-1 ring-offset-[var(--background)]"
-                            : "")
-                        }
-                      >
-                        {b.text}
-                      </span>
                     </div>
-                  );
-                })}
-                {mode === "followup" && fuCur && (
-                  <p className="mb-1 mt-2 text-[11.5px] text-[var(--faint)]">
-                    {fuCur.waiting_state === "waiting_on_them"
-                      ? `Conversation ends on your message · no reply for ${ageLabel(
-                          fuCur.last_activity_days
-                        )}.`
-                      : `Conversation ends on ${fuCur.last_from}'s reply · likely just needs a short acknowledgement.`}
-                  </p>
-                )}
-              </div>
-            </div>
+                  )}
 
-            {/* composer */}
-            <div className="border-t border-border bg-background px-[26px] pb-[18px] pt-4">
-              <div className="mx-auto w-full max-w-[760px]">
-                <div className="mb-2 flex items-center gap-2 text-[11.5px] text-[var(--muted-foreground)]">
-                  <span className="text-[var(--primary)]">✦</span>
-                  {mode === "followup" ? "Suggested follow-up" : "Suggested reply"}
-                  <b className="font-semibold text-foreground">· drafted in your style</b>
+                  {/* Collapsible full thread */}
+                  <button
+                    onClick={() => setThreadOpen((o) => !o)}
+                    className="mb-3 flex w-full items-center gap-2 rounded-[8px] border border-border px-3 py-2 text-left text-[12px] font-medium text-[var(--muted-foreground)] hover:bg-[var(--hover)]"
+                  >
+                    <span
+                      className="text-[var(--faint)] transition-transform"
+                      style={{ transform: threadOpen ? "rotate(90deg)" : "none" }}
+                    >
+                      ▸
+                    </span>
+                    {threadOpen ? "Hide" : "Show"} full conversation
+                    <span className="text-[var(--faint)]">
+                      ({(fuCur.thread_json || []).length} message
+                      {(fuCur.thread_json || []).length === 1 ? "" : "s"})
+                    </span>
+                    <span className="ml-auto text-[11px] text-[var(--faint)]">🚩 marks what you flagged</span>
+                  </button>
+                  {threadOpen && (
+                    <>
+                      <div className="flex-1" />
+                      {(fuCur.thread_json || []).map((b, i) => {
+                        const me = isBryan(b.from);
+                        const flagged = b.is_flagged;
+                        return (
+                          <div key={i} className={"mb-4 max-w-[82%] " + (me ? "ml-auto" : "")}>
+                            <div className={"mb-1 flex items-center gap-2 " + (me ? "justify-end" : "")}>
+                              {flagged && (
+                                <span className="rounded-full bg-[var(--primary)] px-1.5 py-px text-[9.5px] font-semibold text-[var(--primary-foreground)]">
+                                  🚩 flagged
+                                </span>
+                              )}
+                              <span className="text-[12px] font-medium text-[var(--muted-foreground)]">
+                                {me ? "You" : b.from}
+                              </span>
+                              <span className="text-[10.5px] tabular-nums text-[var(--faint)]">{b.t}</span>
+                            </div>
+                            <span
+                              className={
+                                "inline-block whitespace-pre-wrap px-[13px] py-[9px] text-[13.5px] " +
+                                (me
+                                  ? "rounded-[14px_4px_14px_14px] bg-[var(--accent)]"
+                                  : "rounded-[4px_14px_14px_14px] bg-[var(--hover)]") +
+                                (flagged
+                                  ? " ring-2 ring-[var(--primary)] ring-offset-1 ring-offset-[var(--background)]"
+                                  : "")
+                              }
+                            >
+                              {b.text}
+                            </span>
+                          </div>
+                        );
+                      })}
+                      {fuCur && (
+                        <p className="mb-1 mt-2 text-[11.5px] text-[var(--faint)]">
+                          {fuCur.waiting_state === "waiting_on_them"
+                            ? `Conversation ends on your message · no reply for ${ageLabel(fuCur.last_activity_days)}.`
+                            : `Conversation ends on ${fuCur.last_from}'s reply · likely just needs a short acknowledgement.`}
+                        </p>
+                      )}
+                    </>
+                  )}
                 </div>
-                <textarea
-                  ref={taRef}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  spellCheck={false}
-                  disabled={mode === "unread" && filter === "sent"}
-                  placeholder={
-                    mode === "followup" && !base
-                      ? "looks handled — edit here if you still want to nudge"
-                      : undefined
-                  }
-                  className="w-full resize-none rounded-lg border border-border bg-background px-3.5 py-3 text-[14px] leading-[1.55] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)] disabled:opacity-70"
-                  style={{ minHeight: 80 }}
-                />
+              </div>
 
-                {/* FEATURE 4: refine with my context (Follow-up only) */}
-                {mode === "followup" && (
+              {/* composer */}
+              <div className="border-t border-border bg-background px-[26px] pb-[18px] pt-4">
+                <div className="mx-auto w-full max-w-[760px]">
+                  <div className="mb-2 flex items-center gap-2 text-[11.5px] text-[var(--muted-foreground)]">
+                    <span className="text-[var(--primary)]">✦</span>
+                    Suggested follow-up
+                    <b className="font-semibold text-foreground">· drafted in your style</b>
+                  </div>
+                  <textarea
+                    ref={taRef}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    spellCheck={false}
+                    placeholder={!base ? "looks handled — edit here if you still want to nudge" : undefined}
+                    className="w-full resize-none rounded-lg border border-border bg-background px-3.5 py-3 text-[14px] leading-[1.55] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)]"
+                    style={{ minHeight: 80 }}
+                  />
+
+                  {/* refine with my context */}
                   <div className="mt-2.5 overflow-hidden rounded-[10px] border border-border bg-[var(--card)]">
                     <button
                       onClick={() => setRefineOpen((o) => !o)}
@@ -783,51 +1055,38 @@ export default function Home() {
                       </div>
                     )}
                   </div>
-                )}
 
-                <div className="mt-3 flex items-center gap-3">
-                  {!(mode === "unread" && filter === "sent") && (
+                  <div className="mt-3 flex items-center gap-3">
                     <button
                       onClick={send}
                       disabled={sending}
                       className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2 text-[13.5px] font-semibold text-[var(--primary-foreground)] transition hover:brightness-110 disabled:opacity-50"
                     >
-                      {sending ? "Sending…" : mode === "followup" ? "Send follow-up" : "Send"}
-                      <span className="rounded border border-white/40 px-1 text-[11px] opacity-80">
-                        ⌘↵
-                      </span>
+                      {sending ? "Sending…" : "Send follow-up"}
+                      <span className="rounded border border-white/40 px-1 text-[11px] opacity-80">⌘↵</span>
                     </button>
-                  )}
-                  <span
-                    className="ml-auto text-[11.5px] transition-colors"
-                    style={{ color: edited ? "var(--edited)" : "var(--faint)" }}
-                  >
-                    {mode === "unread" && filter === "sent"
-                      ? "sent"
-                      : edited
-                      ? "edited — saved as your style signal"
-                      : "matches your style"}
-                  </span>
+                    <span
+                      className="ml-auto text-[11.5px] transition-colors"
+                      style={{ color: edited ? "var(--edited)" : "var(--faint)" }}
+                    >
+                      {edited ? "edited — saved as your style signal" : "matches your style"}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
-          </>
-        ) : (
-          <div className="grid flex-1 place-items-center text-center text-[var(--muted-foreground)]">
-            <div>
-              <div className="mb-2.5 text-3xl">✓</div>
-              <div className="mb-1 text-[15px] font-semibold text-foreground">All caught up</div>
-              <div className="text-[13px]">
-                {mode === "followup"
-                  ? "No flagged follow-ups waiting."
-                  : "Nothing waiting on a reply."}
+            </>
+          ) : (
+            <div className="grid flex-1 place-items-center text-center text-[var(--muted-foreground)]">
+              <div>
+                <div className="mb-2.5 text-3xl">✓</div>
+                <div className="mb-1 text-[15px] font-semibold text-foreground">All caught up</div>
+                <div className="text-[13px]">No flagged threads waiting.</div>
               </div>
             </div>
-          </div>
-        )}
-      </main>
+          )}
+        </main>
+      </div>
 
-      {/* toast */}
       <div
         className={
           "fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-[9px] bg-foreground px-4 py-2 text-[13px] text-background transition-all " +
@@ -836,6 +1095,6 @@ export default function Home() {
       >
         {toast}
       </div>
-    </div>
+    </>
   );
 }
