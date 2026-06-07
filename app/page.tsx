@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DraftComposer from "@/components/DraftComposer";
 
 type ThreadMsg = { t: string; from: string; text: string; is_flagged?: boolean };
 type RefineSource = { type: string; name: string; quote: string };
@@ -107,24 +108,9 @@ export default function Home() {
     fuHandleRef.current = fuHandle;
   }, [fuHandle]);
   const [threadOpen, setThreadOpen] = useState(false);
-
-  // composer
-  const [draft, setDraft] = useState("");
-  const [base, setBase] = useState("");
-  const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
   const [dark, setDark] = useState(false);
-  const taRef = useRef<HTMLTextAreaElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // refine-with-context
-  const [refineOpen, setRefineOpen] = useState(false);
-  const [refineInstr, setRefineInstr] = useState("");
-  const [useObsidian, setUseObsidian] = useState(true);
-  const [useMemory, setUseMemory] = useState(true);
-  const [refining, setRefining] = useState(false);
-  const [refineStatus, setRefineStatus] = useState("");
-  const [refineSources, setRefineSources] = useState<RefineSource[]>([]);
 
   // unflag + link-to-related-chat (Plan A)
   const [unflagOpen, setUnflagOpen] = useState(false);
@@ -145,7 +131,6 @@ export default function Home() {
 
   const sorted = useMemo(() => sortFu(fuRows), [fuRows]);
   const fuCur = fuRows.find((r) => r.handle === fuHandle) || null;
-  const edited = draft.trim() !== base.trim();
 
   const loadFu = useCallback(async (keep?: string | null) => {
     try {
@@ -160,8 +145,6 @@ export default function Home() {
       if (top) openFu(top);
       else {
         setFuHandle(null);
-        setDraft("");
-        setBase("");
       }
     } catch {
       setFuRows([]);
@@ -170,13 +153,7 @@ export default function Home() {
 
   function openFu(r: FollowupRow) {
     setFuHandle(r.handle);
-    setDraft(r.draft_text || "");
-    setBase(r.draft_text || "");
     setThreadOpen(false);
-    setRefineOpen(false);
-    setRefineInstr("");
-    setRefineStatus("");
-    setRefineSources([]);
     // reset unflag popover
     setUnflagOpen(false);
     setUnflagNote("");
@@ -192,116 +169,13 @@ export default function Home() {
     setFixLearned("");
   }
 
-  async function runRefine() {
-    if (refining || !fuCur) return;
-    setRefining(true);
-    setRefineSources([]);
-    setRefineStatus("reading your notes + memory…");
+  function toggleTheme() {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle("dark", next);
     try {
-      const res = await fetch("/api/refine", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          handle: fuCur.handle,
-          instruction: refineInstr,
-          useObsidian,
-          useMemory,
-        }),
-      });
-      const r = await res.json();
-      if (r.ok && r.draft) {
-        setDraft(r.draft);
-        setRefineSources(r.sources || []);
-        setRefineStatus(r.status || "re-drafted with your context");
-      } else if (r.ok && !r.draft) {
-        setRefineSources(r.sources || []);
-        setRefineStatus(r.status || "no change suggested");
-      } else {
-        setRefineStatus(`couldn't refine: ${r.error || "unknown"}`);
-      }
-    } catch {
-      setRefineStatus("couldn't refine: network error");
-    } finally {
-      setRefining(false);
-    }
-  }
-
-  // initial load + light polling (preserves selection via ref)
-  useEffect(() => {
-    loadFu(fuHandleRef.current);
-    const iv = setInterval(() => loadFu(fuHandleRef.current), 15000);
-    return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // debounced related-chat search for the unflag link picker
-  useEffect(() => {
-    if (!unflagOpen) return;
-    const q = linkQuery.trim();
-    if (q.length < 2) {
-      setLinkResults([]);
-      return;
-    }
-    const t = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/followups/related?q=${encodeURIComponent(q)}`, {
-          cache: "no-store",
-        });
-        const data = await res.json();
-        setLinkResults(Array.isArray(data) ? data : []);
-      } catch {
-        setLinkResults([]);
-      }
-    }, 320);
-    return () => clearTimeout(t);
-  }, [linkQuery, unflagOpen]);
-
-  // remove the current row from the rail + advance to next (shared by send + unflag)
-  function dropCurrentRow(handle: string) {
-    const remaining = fuRows.filter((x) => x.handle !== handle);
-    setFuRows(remaining);
-    const top = sortFu(remaining)[0];
-    if (top) openFu(top);
-    else {
-      setFuHandle(null);
-      setDraft("");
-      setBase("");
-    }
-    setTimeout(() => loadFu(null), 1500);
-  }
-
-  async function doUnflag() {
-    if (unflagging || !fuCur) return;
-    const activeHandle = fuCur.handle;
-    setUnflagging(true);
-    try {
-      const res = await fetch("/api/send", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          handle: activeHandle,
-          action: "unflag",
-          note: unflagNote,
-          link: linkedChat,
-        }),
-      });
-      const r = await res.json();
-      if (r.status === "unflagged") {
-        showToast(linkedChat ? "Unflagged · linked" : "Unflagged");
-        setUnflagOpen(false);
-        dropCurrentRow(activeHandle);
-      } else if (r.status === "queued") {
-        showToast("Queued — Lark will remove the flag within ~60s");
-        setUnflagOpen(false);
-        dropCurrentRow(activeHandle);   // remove from UI now; daemon handles Lark side
-      } else {
-        showToast(`Unflag failed: ${r.detail || "unknown"}`);
-      }
-    } catch {
-      showToast("Unflag failed: network");
-    } finally {
-      setUnflagging(false);
-    }
+      localStorage.setItem("lrd-theme", next ? "dark" : "light");
+    } catch {}
   }
 
   // apply a structured correction (quick chips / date / person), refresh in place
@@ -332,7 +206,7 @@ export default function Home() {
     }
   }
 
-  // free-text correction -> NL mode (one Claude turn distills fields + a lesson)
+  // free-text correction -> NL mode
   async function doCorrectNL() {
     if (fixing || !fuCur || !fixNl.trim()) return;
     const activeHandle = fuCur.handle;
@@ -362,92 +236,75 @@ export default function Home() {
     }
   }
 
-  useEffect(() => {
-    setDark(document.documentElement.classList.contains("dark"));
-  }, []);
-  function toggleTheme() {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
-    try {
-      localStorage.setItem("lrd-theme", next ? "dark" : "light");
-    } catch {}
-  }
-
   function showToast(t: string) {
     setToast(t);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(""), 2600);
   }
 
+  // debounced related-chat search for the unflag link picker
   useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
-  }, [draft, fuHandle]);
+    if (!unflagOpen) return;
+    const q = linkQuery.trim();
+    if (q.length < 2) { setLinkResults([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/followups/related?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        const data = await res.json();
+        setLinkResults(Array.isArray(data) ? data : []);
+      } catch { setLinkResults([]); }
+    }, 320);
+    return () => clearTimeout(t);
+  }, [linkQuery, unflagOpen]);
 
-  async function send() {
-    if (sending || !fuCur) return;
+  // remove the current row from the rail + advance to next
+  function dropCurrentRow(handle: string) {
+    const remaining = fuRows.filter((x) => x.handle !== handle);
+    setFuRows(remaining);
+    const top = sortFu(remaining)[0];
+    if (top) openFu(top);
+    else setFuHandle(null);
+    setTimeout(() => loadFu(null), 1500);
+  }
+
+  async function doUnflag() {
+    if (unflagging || !fuCur) return;
     const activeHandle = fuCur.handle;
-    setSending(true);
+    setUnflagging(true);
     try {
       const res = await fetch("/api/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ handle: activeHandle, sent_text: draft, queue: "followup" }),
+        body: JSON.stringify({ handle: activeHandle, action: "unflag", note: unflagNote, link: linkedChat }),
       });
       const r = await res.json();
-      if (r.status === "sent") showToast("Sent · flag kept");
-      else if (r.status === "queued") showToast("Queued · sends on the daemon's next cycle");
-      else {
-        showToast(`Send failed: ${r.detail || "unknown"}`);
-        setSending(false);
-        return;
+      if (r.status === "unflagged") {
+        showToast(linkedChat ? "Unflagged · linked" : "Unflagged");
+        setUnflagOpen(false);
+        dropCurrentRow(activeHandle);
+      } else if (r.status === "queued") {
+        showToast("Queued — Lark will remove the flag within ~60s");
+        setUnflagOpen(false);
+        dropCurrentRow(activeHandle);
+      } else {
+        showToast(`Unflag failed: ${r.detail || "unknown"}`);
       }
-      const remaining = fuRows.filter((x) => x.handle !== activeHandle);
-      setFuRows(remaining);
-      const top = sortFu(remaining)[0];
-      if (top) openFu(top);
-      else {
-        setFuHandle(null);
-        setDraft("");
-        setBase("");
-      }
-      setTimeout(() => loadFu(null), 1500);
     } catch {
-      showToast("Send failed: network");
+      showToast("Unflag failed: network");
     } finally {
-      setSending(false);
+      setUnflagging(false);
     }
   }
 
-  // keyboard nav over the sorted rail
+  // apply a structured correction
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        send();
-        return;
-      }
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "TEXTAREA" || tag === "INPUT") return;
-      const i = sorted.findIndex((r) => r.handle === fuHandle);
-      if (e.key === "j" || e.key === "ArrowDown") {
-        e.preventDefault();
-        const n = sorted[Math.min(sorted.length - 1, i + 1)];
-        if (n) openFu(n);
-      }
-      if (e.key === "k" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const p = sorted[Math.max(0, i - 1)];
-        if (p) openFu(p);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    loadFu(fuHandleRef.current);
+    const iv = setInterval(() => loadFu(fuHandleRef.current), 15000);
+    return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sorted, fuHandle, draft, sending]);
+  }, []);
+
+  // debounced related-chat search for the unflag link picker
 
   const headerSub = fuCur
     ? prettyChat(fuCur.chat_name)
@@ -946,134 +803,19 @@ export default function Home() {
               </div>
 
               {/* composer */}
-              <div className="border-t border-border bg-background px-[26px] pb-[18px] pt-4">
-                <div className="mx-auto w-full max-w-[760px]">
-                  <div className="mb-2 flex items-center gap-2 text-[11.5px] text-[var(--muted-foreground)]">
-                    <span className="text-[var(--primary)]">✦</span>
-                    Suggested follow-up
-                    <b className="font-semibold text-foreground">· drafted in your style</b>
-                  </div>
-                  <textarea
-                    ref={taRef}
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    spellCheck={false}
-                    placeholder={!base ? "looks handled — edit here if you still want to nudge" : undefined}
-                    className="w-full resize-none rounded-lg border border-border bg-background px-3.5 py-3 text-[14px] leading-[1.55] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)]"
-                    style={{ minHeight: 80 }}
-                  />
-
-                  {/* refine with my context */}
-                  <div className="mt-2.5 overflow-hidden rounded-[10px] border border-border bg-[var(--card)]">
-                    <button
-                      onClick={() => setRefineOpen((o) => !o)}
-                      className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-[var(--hover)]"
-                    >
-                      <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-[var(--accent)] text-[13px] text-[var(--accent-foreground)]">
-                        ⌕
-                      </span>
-                      <span className="flex-1">
-                        <span className="block text-[13px] font-semibold">Refine with my context</span>
-                        <span className="block text-[11.5px] text-[var(--muted-foreground)]">
-                          let Hermes read my Obsidian notes + memory before re-drafting
-                        </span>
-                      </span>
-                      <span
-                        className="text-[var(--faint)] transition-transform"
-                        style={{ transform: refineOpen ? "rotate(180deg)" : "none" }}
-                      >
-                        ▾
-                      </span>
-                    </button>
-                    {refineOpen && (
-                      <div className="border-t border-border px-3 pb-3 pt-2.5">
-                        <input
-                          value={refineInstr}
-                          onChange={(e) => setRefineInstr(e.target.value)}
-                          placeholder="optional: what should I check? e.g. 'read my PRD on the airline filter'"
-                          className="mb-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)]"
-                        />
-                        <div className="mb-1.5 text-[11px] text-[var(--faint)]">Sources Hermes may read</div>
-                        <div className="mb-3 flex flex-wrap gap-2">
-                          <button
-                            onClick={() => setUseObsidian((v) => !v)}
-                            aria-pressed={useObsidian}
-                            className={
-                              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] " +
-                              (useObsidian
-                                ? "border-transparent bg-[var(--accent)] text-[var(--accent-foreground)]"
-                                : "border-border bg-background text-[var(--muted-foreground)]")
-                            }
-                          >
-                            📄 Obsidian notes
-                          </button>
-                          <button
-                            onClick={() => setUseMemory((v) => !v)}
-                            aria-pressed={useMemory}
-                            className={
-                              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] " +
-                              (useMemory
-                                ? "border-transparent bg-[var(--accent)] text-[var(--accent-foreground)]"
-                                : "border-border bg-background text-[var(--muted-foreground)]")
-                            }
-                          >
-                            🧠 My memory
-                          </button>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={runRefine}
-                            disabled={refining || (!useObsidian && !useMemory)}
-                            className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-3.5 py-2 text-[13px] font-semibold text-[var(--primary-foreground)] transition hover:brightness-110 disabled:opacity-50"
-                          >
-                            {refining ? "Reading…" : "⌕ Re-draft with context"}
-                          </button>
-                          {refineStatus && (
-                            <span className="text-[11.5px] text-[var(--faint)]">{refineStatus}</span>
-                          )}
-                        </div>
-                        {refineSources.length > 0 && (
-                          <div className="mt-3 rounded-lg border border-border bg-background px-3 py-2.5">
-                            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--good,#0f9d6b)]">
-                              ✓ Read {refineSources.length} source{refineSources.length > 1 ? "s" : ""}
-                            </div>
-                            {refineSources.map((s, i) => (
-                              <div key={i} className="flex items-start gap-2 py-0.5 text-[12px] text-[var(--muted-foreground)]">
-                                <span className="flex-none">{s.type === "memory" ? "🧠" : "📄"}</span>
-                                <span>
-                                  <span className="font-semibold text-foreground">{s.name}</span>
-                                  {s.quote && (
-                                    <span className="mt-0.5 block text-[11.5px] italic text-[var(--faint)]">
-                                      {s.quote}
-                                    </span>
-                                  )}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-3 flex items-center gap-3">
-                    <button
-                      onClick={send}
-                      disabled={sending}
-                      className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2 text-[13.5px] font-semibold text-[var(--primary-foreground)] transition hover:brightness-110 disabled:opacity-50"
-                    >
-                      {sending ? "Sending…" : "Send follow-up"}
-                      <span className="rounded border border-white/40 px-1 text-[11px] opacity-80">⌘↵</span>
-                    </button>
-                    <span
-                      className="ml-auto text-[11.5px] transition-colors"
-                      style={{ color: edited ? "var(--edited)" : "var(--faint)" }}
-                    >
-                      {edited ? "edited — saved as your style signal" : "matches your style"}
-                    </span>
-                  </div>
-                </div>
-              </div>
+              <DraftComposer
+                fuHandle={fuHandle}
+                initialDraft={fuCur?.draft_text ?? ""}
+                onSent={(handle) => {
+                  const remaining = fuRows.filter((x) => x.handle !== handle);
+                  setFuRows(remaining);
+                  const top = sortFu(remaining)[0];
+                  if (top) openFu(top);
+                  else setFuHandle(null);
+                  setTimeout(() => loadFu(null), 1500);
+                }}
+                onToast={showToast}
+              />
             </>
           ) : (
             <div className="grid flex-1 place-items-center text-center text-[var(--muted-foreground)]">
