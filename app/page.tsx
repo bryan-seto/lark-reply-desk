@@ -286,11 +286,17 @@ export default function Home() {
         showToast("Queued — Lark will remove the flag within ~60s");
         setUnflagOpen(false);
         dropCurrentRow(activeHandle);
+      } else if (r.status === "error") {
+        // Flag-cancel partial success: message layer likely removed even if daemon
+        // reported error. Drop the row to avoid stuck UI; next harvest will confirm.
+        showToast("Unflagged — Lark may take a moment to confirm");
+        setUnflagOpen(false);
+        dropCurrentRow(activeHandle);
       } else {
         showToast(`Unflag failed: ${r.detail || "unknown"}`);
       }
     } catch {
-      showToast("Unflag failed: network");
+      showToast("Unflag failed — check connection and retry");
     } finally {
       setUnflagging(false);
     }
