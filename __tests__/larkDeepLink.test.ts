@@ -3,56 +3,53 @@ import { larkDeepLink } from "../lib/larkDeepLink";
 
 describe("larkDeepLink", () => {
   const CHAT_ID = "oc_testchat123";
+  const THREAD_ID = "omt_testthread456";
 
-  // 1. Returns message link when flag_message_id is present
-  it("returns a message link URL when flag_message_id is present", () => {
-    const url = larkDeepLink({ chat_id: CHAT_ID, flag_message_id: "om_abc123" });
-    expect(url).toContain("message_link");
-    expect(url).toContain("om_abc123");
+  // 1. Always opens via chat/open with the chat id
+  it("builds a chat/open applink with the chat id", () => {
+    const url = larkDeepLink({ chat_id: CHAT_ID });
+    expect(url).toContain("client/chat/open");
+    expect(url).toContain(`openChatId=${CHAT_ID}`);
   });
 
-  // 2. Falls back to chat link when flag_message_id is undefined
-  it("falls back to chat link when flag_message_id is undefined", () => {
-    const url = larkDeepLink({ chat_id: CHAT_ID, flag_message_id: undefined });
-    expect(url).not.toContain("message_link");
-    expect(url).toContain(CHAT_ID);
+  // 2. Appends open_thread_id when thread_id is present
+  it("appends open_thread_id when thread_id is present", () => {
+    const url = larkDeepLink({ chat_id: CHAT_ID, thread_id: THREAD_ID });
+    expect(url).toContain(`openChatId=${CHAT_ID}`);
+    expect(url).toContain(`open_thread_id=${THREAD_ID}`);
   });
 
-  // 3. Falls back to chat link when flag_message_id is null
-  it("falls back to chat link when flag_message_id is null", () => {
-    const url = larkDeepLink({ chat_id: CHAT_ID, flag_message_id: null });
-    expect(url).not.toContain("message_link");
-    expect(url).toContain(CHAT_ID);
+  // 3. Omits open_thread_id when thread_id is undefined
+  it("omits open_thread_id when thread_id is undefined", () => {
+    const url = larkDeepLink({ chat_id: CHAT_ID, thread_id: undefined });
+    expect(url).not.toContain("open_thread_id");
   });
 
-  // 4. Falls back to chat link when flag_message_id is empty string
-  it("falls back to chat link when flag_message_id is empty string", () => {
-    const url = larkDeepLink({ chat_id: CHAT_ID, flag_message_id: "" });
-    expect(url).not.toContain("message_link");
-    expect(url).toContain(CHAT_ID);
+  // 4. Omits open_thread_id when thread_id is null
+  it("omits open_thread_id when thread_id is null", () => {
+    const url = larkDeepLink({ chat_id: CHAT_ID, thread_id: null });
+    expect(url).not.toContain("open_thread_id");
   });
 
-  // 5. Message link uses applink.larksuite.com (NOT feishu.cn)
-  it("message link uses applink.larksuite.com domain", () => {
-    const url = larkDeepLink({ chat_id: CHAT_ID, flag_message_id: "om_abc123" });
+  // 5. Omits open_thread_id when thread_id is empty string
+  it("omits open_thread_id when thread_id is empty string", () => {
+    const url = larkDeepLink({ chat_id: CHAT_ID, thread_id: "" });
+    expect(url).not.toContain("open_thread_id");
+  });
+
+  // 6. Uses applink.larksuite.com (NOT feishu.cn) and never the invalid message_link path
+  it("uses applink.larksuite.com domain and never message_link", () => {
+    const url = larkDeepLink({ chat_id: CHAT_ID, thread_id: THREAD_ID });
     expect(url).toContain("applink.larksuite.com");
     expect(url).not.toContain("feishu.cn");
+    expect(url).not.toContain("message_link");
   });
 
-  // 6. Chat link uses applink.larksuite.com (NOT feishu.cn)
-  it("chat link uses applink.larksuite.com domain", () => {
-    const url = larkDeepLink({ chat_id: CHAT_ID, flag_message_id: undefined });
-    expect(url).toContain("applink.larksuite.com");
-    expect(url).not.toContain("feishu.cn");
-  });
-
-  // 7. IDs are URL-encoded in the output
+  // 7. URL-encodes ids that contain special characters
   it("URL-encodes a chat_id that contains special characters", () => {
     const specialChatId = "oc_test+chat/123";
-    const url = larkDeepLink({ chat_id: specialChatId, flag_message_id: undefined });
-    // Raw '+' and '/' should not appear unencoded
+    const url = larkDeepLink({ chat_id: specialChatId });
     expect(url).not.toMatch(/oc_test\+chat\/123/);
-    // Encoded forms should be present
-    expect(url).toMatch(/oc_test(%2B|\+)chat(%2F|\/)123/i);
+    expect(url).toContain("oc_test%2Bchat%2F123");
   });
 });

@@ -662,8 +662,8 @@ export default function Home() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--primary)]"
-                          title={fuCur.flag_message_id ? "Jump to flagged message in Lark" : "Open chat in Lark"}
-                          aria-label={fuCur.flag_message_id ? "Jump to flagged message in Lark" : "Open chat in Lark"}
+                          title={fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
+                          aria-label={fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
                         >
                           <span aria-hidden="true">↗</span> Open
                         </a>
