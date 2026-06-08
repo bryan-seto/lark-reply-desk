@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DraftComposer from "@/components/DraftComposer";
-import { larkDeepLink } from "@/lib/larkDeepLink";
+import { larkDeepLink, larkSearchSnippet } from "@/lib/larkDeepLink";
 
 type ThreadMsg = { t: string; from: string; text: string; is_flagged?: boolean };
 type RefineSource = { type: string; name: string; quote: string };
@@ -663,11 +663,29 @@ export default function Home() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--primary)]"
-                          title={fuCur.applink ? "Jump to the flagged message in Lark" : fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
-                          aria-label={fuCur.applink ? "Jump to the flagged message in Lark" : fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
+                          title="Open the group in Lark (then ⌘F to find the message)"
+                          aria-label="Open the group in Lark"
                         >
                           <span aria-hidden="true">↗</span> Open
                         </a>
+                        {larkSearchSnippet(fuCur.flagged_text) && (
+                          <button
+                            onClick={async () => {
+                              const snippet = larkSearchSnippet(fuCur.flagged_text);
+                              try {
+                                await navigator.clipboard.writeText(snippet);
+                                showToast("Search text copied — ⌘F in Lark and paste to jump to the message");
+                              } catch {
+                                showToast("Couldn't copy — select the flagged text below instead");
+                              }
+                            }}
+                            className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--primary)]"
+                            title="Copy the flagged message text to search for it (⌘F) inside Lark"
+                            aria-label="Copy search text for Lark"
+                          >
+                            <span aria-hidden="true">⌕</span> Copy
+                          </button>
+                        )}
                       </div>
 
                       {/* state badges + corrected chip */}
