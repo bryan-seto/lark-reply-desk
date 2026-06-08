@@ -14,6 +14,7 @@ type FollowupRow = {
   person: string;
   parent_message_id: string;
   flag_message_id?: string;
+  applink?: string;
   flagged_text?: string;
   flagged_from?: string;
   flagged_at: number;
@@ -662,8 +663,8 @@ export default function Home() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--primary)]"
-                          title={fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
-                          aria-label={fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
+                          title={fuCur.applink ? "Jump to the flagged message in Lark" : fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
+                          aria-label={fuCur.applink ? "Jump to the flagged message in Lark" : fuCur.thread_id ? "Open this thread in Lark" : "Open chat in Lark"}
                         >
                           <span aria-hidden="true">↗</span> Open
                         </a>

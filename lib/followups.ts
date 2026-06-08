@@ -17,6 +17,7 @@ export type FollowupRow = {
   person: string;
   parent_message_id: string;
   flag_message_id?: string;
+  applink?: string;
   flagged_text?: string;
   flagged_from?: string;
   flagged_at: number;
