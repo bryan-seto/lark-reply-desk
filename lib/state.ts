@@ -26,7 +26,7 @@ export type QueueRow = {
 export type SendResult = {
   id: string;
   handle: string;
-  status: "sent" | "error" | "queued" | "unflagged";
+  status: "sent" | "error" | "queued" | "unflagged" | "parked";
   detail?: string;
   ts?: number;
 };
@@ -100,6 +100,30 @@ export async function unflagViaDaemon(
   const cmd: Record<string, unknown> = { id, handle, action: "unflag" };
   if (note) cmd.note = note;
   if (link) cmd.link = link;
+  await fs.appendFile(CMD_PATH, JSON.stringify(cmd) + "\n", "utf8");
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 700));
+    const results = await readJsonl<SendResult>(RESULTS_PATH);
+    const hit = results.find((r) => r.id === id);
+    if (hit) return hit;
+  }
+  return { id, handle, status: "queued", detail: "daemon will process on next cycle" };
+}
+
+// Park a thread: unflag from Lark, mark status=parked in the followup queue so
+// the row survives harvests. The harvester watcher will auto-promote back to
+// pending when new activity is detected. Optional reason + topic_tag.
+export async function parkViaDaemon(
+  handle: string,
+  opts: { reason?: string; topic_tag?: string; timeoutMs?: number } = {}
+): Promise<SendResult> {
+  const { reason, topic_tag, timeoutMs = 90000 } = opts;
+  const id = randomUUID();
+  const cmd: Record<string, unknown> = { id, handle, action: "park" };
+  if (reason) cmd.reason = reason;
+  if (topic_tag) cmd.topic_tag = topic_tag;
   await fs.appendFile(CMD_PATH, JSON.stringify(cmd) + "\n", "utf8");
 
   const deadline = Date.now() + timeoutMs;

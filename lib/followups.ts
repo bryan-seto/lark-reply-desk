@@ -36,8 +36,13 @@ export type FollowupRow = {
   thread_json: FollowupThreadMsg[];
   draft_text: string;
   drafted_at: number;
-  status: "pending" | "sent";
+  status: "pending" | "sent" | "parked";
   sent_text?: string;
+  // park fields
+  topic_tag?: string;
+  parked_at?: number;
+  parked_reason?: string;
+  new_activity_since_park?: boolean;
 };
 
 async function readJsonl<T>(path: string): Promise<T[]> {
@@ -64,7 +69,7 @@ async function readJsonl<T>(path: string): Promise<T[]> {
 // Do NOT re-sort by drafted_at — the harvester already encodes Bryan's preferred
 // order, and every row in a single harvest shares ~the same drafted_at.
 export async function readFollowups(
-  status: "pending" | "sent" = "pending"
+  status: "pending" | "sent" | "parked" = "pending"
 ): Promise<FollowupRow[]> {
   const rows = await readJsonl<FollowupRow>(FOLLOWUP_QUEUE_PATH);
   return rows.filter((r) => (r.status ?? "pending") === status);

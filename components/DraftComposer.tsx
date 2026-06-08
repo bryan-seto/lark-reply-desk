@@ -9,6 +9,8 @@ interface DraftComposerProps {
   fuHandle: string | null;
   /** draft text from the selected row; changes whenever fuHandle changes */
   initialDraft: string;
+  /** when true, the flagged fix is still unresolved — show a nudge placeholder */
+  pendingFix?: boolean;
   /** called after a successful send — root removes the row and advances */
   onSent: (handle: string) => void;
   /** called whenever the composer wants to show a toast notification */
@@ -18,6 +20,7 @@ interface DraftComposerProps {
 export default function DraftComposer({
   fuHandle,
   initialDraft,
+  pendingFix,
   onSent,
   onToast,
 }: DraftComposerProps) {
@@ -104,6 +107,7 @@ export default function DraftComposer({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           handle: fuHandle,
+          prior_draft: draft,
           instruction: refineInstr,
           useObsidian,
           useMemory,
@@ -142,7 +146,13 @@ export default function DraftComposer({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           spellCheck={false}
-          placeholder={!base ? "looks handled — edit here if you still want to nudge" : undefined}
+          placeholder={
+            !base
+              ? pendingFix
+                ? "fix still pending · draft your nudge here"
+                : "looks handled · edit here if you still want to nudge"
+              : undefined
+          }
           className="w-full resize-none rounded-lg border border-border bg-background px-3.5 py-3 text-[14px] leading-[1.55] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--accent)]"
           style={{ minHeight: 80 }}
         />

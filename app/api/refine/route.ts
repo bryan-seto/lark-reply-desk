@@ -13,6 +13,7 @@ const NODE_BIN = "/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin";
 
 type RefineBody = {
   handle?: string;
+  prior_draft?: string;
   instruction?: string;
   useObsidian?: boolean;
   useMemory?: boolean;
@@ -51,6 +52,9 @@ export async function POST(request: Request) {
   }
 
   const args = ["--handle", handle];
+  if (body.prior_draft && body.prior_draft.trim()) {
+    args.push("--prior-draft", body.prior_draft.trim());
+  }
   if (body.instruction && body.instruction.trim()) {
     args.push("--instruction", body.instruction.trim());
   }

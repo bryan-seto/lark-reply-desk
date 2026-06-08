@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { sendViaDaemon, unflagViaDaemon } from "@/lib/state";
+import { sendViaDaemon, unflagViaDaemon, parkViaDaemon } from "@/lib/state";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,9 +9,11 @@ export async function POST(request: Request) {
     handle?: string;
     sent_text?: string;
     queue?: "followup";
-    action?: "send" | "unflag";
+    action?: "send" | "unflag" | "park";
     note?: string;
     link?: { chat_id: string; chat_name: string };
+    reason?: string;
+    topic_tag?: string;
   };
   try {
     body = await request.json();
@@ -27,6 +29,13 @@ export async function POST(request: Request) {
   // optionally records a cross-reference link. Never triggered by a normal send.
   if (body.action === "unflag") {
     const result = await unflagViaDaemon(handle, { note: body.note, link: body.link });
+    return NextResponse.json(result);
+  }
+
+  // Park: unflag Lark bookmark + mark row parked in followup queue. The
+  // harvester watcher will auto-promote back to pending when they reply.
+  if (body.action === "park") {
+    const result = await parkViaDaemon(handle, { reason: body.reason, topic_tag: body.topic_tag });
     return NextResponse.json(result);
   }
 

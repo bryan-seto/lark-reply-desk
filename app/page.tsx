@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DraftComposer from "@/components/DraftComposer";
+import { larkDeepLink } from "@/lib/larkDeepLink";
 
 type ThreadMsg = { t: string; from: string; text: string; is_flagged?: boolean };
 type RefineSource = { type: string; name: string; quote: string };
@@ -41,8 +42,13 @@ type FollowupRow = {
   thread_json: ThreadMsg[];
   draft_text: string;
   drafted_at: number;
-  status: "pending" | "sent";
+  status: "pending" | "sent" | "parked";
   sent_text?: string;
+  // park fields
+  topic_tag?: string;
+  parked_at?: number;
+  parked_reason?: string;
+  new_activity_since_park?: boolean;
 };
 
 const BRYAN_TOKENS = ["Bryan Se To", "Bryan"];
@@ -120,6 +126,14 @@ export default function Home() {
   const [linkedChat, setLinkedChat] = useState<{ chat_id: string; chat_name: string } | null>(null);
   const [unflagging, setUnflagging] = useState(false);
 
+  // park — waiting on them, unflag from Lark, survive harvest
+  const [parkOpen, setParkOpen] = useState(false);
+  const [parkReason, setParkReason] = useState("");
+  const [parkTag, setParkTag] = useState("");
+  const [parking, setParking] = useState(false);
+  const [parkedRows, setParkedRows] = useState<FollowupRow[]>([]);
+  const [parkedTab, setParkedTab] = useState(false);
+
   // inline correction + teach-the-model (Plan B)
   const [fixOpen, setFixOpen] = useState(false);
   const [fixDate, setFixDate] = useState("");
@@ -160,6 +174,10 @@ export default function Home() {
     setLinkQuery("");
     setLinkResults([]);
     setLinkedChat(null);
+    // reset park popover
+    setParkOpen(false);
+    setParkReason("");
+    setParkTag(r.topic_tag || "");
     // reset correction panel
     setFixOpen(false);
     setFixDate(r.suggested_date || "");
@@ -302,6 +320,50 @@ export default function Home() {
     }
   }
 
+  async function doPark() {
+    if (parking || !fuCur) return;
+    const activeHandle = fuCur.handle;
+    setParking(true);
+    try {
+      const res = await fetch("/api/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          handle: activeHandle,
+          action: "park",
+          reason: parkReason,
+          topic_tag: parkTag.trim() || undefined,
+        }),
+      });
+      const r = await res.json();
+      if (r.status === "parked" || r.status === "queued") {
+        showToast(r.status === "parked" ? "Parked — will resurface when they reply" : "Queued — parking on next cycle");
+        setParkOpen(false);
+        dropCurrentRow(activeHandle);
+        // refresh parked list
+        fetch("/api/followups?status=parked", { cache: "no-store" })
+          .then((x) => x.json())
+          .then((d) => setParkedRows(Array.isArray(d) ? d : []))
+          .catch(() => {});
+      } else {
+        showToast(`Park failed: ${r.detail || "unknown"}`);
+      }
+    } catch {
+      showToast("Park failed — check connection");
+    } finally {
+      setParking(false);
+    }
+  }
+
+  // load parked rows whenever parked tab opens
+  useEffect(() => {
+    if (!parkedTab) return;
+    fetch("/api/followups?status=parked", { cache: "no-store" })
+      .then((x) => x.json())
+      .then((d) => setParkedRows(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, [parkedTab]);
+
   // apply a structured correction
   useEffect(() => {
     loadFu(fuHandleRef.current);
@@ -327,13 +389,30 @@ export default function Home() {
         {/* LEFT RAIL — triage by action-required date */}
         <aside className="flex min-h-0 flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar)]">
           <div className="flex items-center gap-2 border-b border-[var(--sidebar-border)] px-4 py-3">
-            <span className="text-[15px] font-semibold">Flagged</span>
+            <button
+              onClick={() => setParkedTab(false)}
+              className={"text-[15px] font-semibold " + (!parkedTab ? "text-foreground" : "text-[var(--faint)] hover:text-foreground")}
+            >
+              Flagged
+            </button>
             <span className="rounded-full bg-[var(--hover)] px-1.5 py-0.5 text-[10.5px] text-[var(--muted-foreground)]">
               {fuRows.length}
             </span>
             {dueNow > 0 && (
               <span className="rounded-full bg-[color-mix(in_srgb,var(--primary)_16%,transparent)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--primary)]">
                 {dueNow} due now
+              </span>
+            )}
+            <span className="mx-1 text-[var(--sidebar-border)]">|</span>
+            <button
+              onClick={() => setParkedTab(true)}
+              className={"text-[15px] font-semibold " + (parkedTab ? "text-foreground" : "text-[var(--faint)] hover:text-foreground")}
+            >
+              Parked
+            </button>
+            {parkedRows.filter((r) => r.new_activity_since_park).length > 0 && (
+              <span className="rounded-full bg-[color-mix(in_srgb,#cb912f_20%,transparent)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[#cb912f]">
+                {parkedRows.filter((r) => r.new_activity_since_park).length} replied
               </span>
             )}
             <button
@@ -345,11 +424,91 @@ export default function Home() {
             </button>
           </div>
           <div className="px-4 pb-1.5 pt-2 text-[11px] text-[var(--faint)]">
-            sorted by when you need to act
+            {parkedTab ? "waiting for them to reply" : "sorted by when you need to act"}
           </div>
 
           <div className="flex-1 overflow-y-auto px-2 pb-3">
-            {sorted.length === 0 ? (
+            {parkedTab ? (
+              // ---- PARKED TAB ----
+              parkedRows.length === 0 ? (
+                <div className="px-3.5 py-10 text-center text-[13px] text-[var(--faint)]">
+                  No parked threads.
+                </div>
+              ) : (
+                (() => {
+                  // group by topic_tag; untagged at bottom
+                  const groups: Record<string, FollowupRow[]> = {};
+                  for (const r of parkedRows) {
+                    const k = r.topic_tag?.trim() || "";
+                    (groups[k] = groups[k] || []).push(r);
+                  }
+                  const tagged = Object.keys(groups).filter((k) => k).sort();
+                  const untagged = groups[""] || [];
+                  const allGroups = [...tagged.map((k) => ({ key: k, rows: groups[k] })), ...(untagged.length ? [{ key: "", rows: untagged }] : [])];
+                  return allGroups.map(({ key, rows }) => (
+                    <div key={key || "__untagged__"}>
+                      {key && (
+                        <div className="mb-1 mt-3 flex items-center gap-1.5 px-2 first:mt-1">
+                          <span className="h-1.5 w-1.5 rounded-full bg-[#cb912f]" />
+                          <span className="text-[10.5px] font-bold uppercase tracking-wider text-[#cb912f]">
+                            {key}
+                          </span>
+                        </div>
+                      )}
+                      {rows.map((r) => (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          key={r.handle}
+                          onClick={() => { setParkedTab(false); openFu(r); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setParkedTab(false); openFu(r); } }}
+                          className="mb-px grid w-full gap-[2px] rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--hover)] group"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="grid h-[20px] w-[20px] flex-none place-items-center rounded-md text-[9px] font-semibold text-white"
+                              style={{ background: colorFor(r.person) }}
+                            >
+                              {initials(r.person)}
+                            </span>
+                            <span className="truncate text-[13px] font-semibold">{r.person}</span>
+                            <div className="ml-auto flex items-center gap-1">
+                              {r.new_activity_since_park && (
+                                <span className="whitespace-nowrap rounded-full bg-[color-mix(in_srgb,#cb912f_20%,transparent)] px-1.5 py-px text-[10px] font-semibold text-[#cb912f]">
+                                  replied
+                                </span>
+                              )}
+                              <a
+                                href={larkDeepLink(r)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex-none rounded p-0.5 text-[11px] text-[var(--faint)] opacity-0 transition-opacity duration-100 group-hover:opacity-100 hover:bg-[var(--hover)] hover:text-[var(--primary)]"
+                                aria-label="Open this thread in Lark"
+                                title="Open this thread in Lark"
+                                tabIndex={-1}
+                              >
+                                ↗
+                              </a>
+                            </div>
+                          </div>
+                          <div className="truncate pl-[28px] text-[12.5px] font-medium">
+                            {r.about_subject || r.summary || "Parked thread"}
+                          </div>
+                          {r.parked_reason && (
+                            <div className="truncate pl-[28px] text-[11.5px] text-[var(--faint)]">
+                              {r.parked_reason}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ));
+                })()
+              )
+            ) : (
+              // ---- FLAGGED TAB ----
+              sorted.length === 0 ? (
               <div className="px-3.5 py-10 text-center text-[13px] text-[var(--faint)]">
                 No flagged threads. Refreshes in the background.
               </div>
@@ -377,11 +536,14 @@ export default function Home() {
                           </span>
                         </div>
                       )}
-                      <button
+                      <div
+                        role="button"
+                        tabIndex={0}
                         onClick={() => openFu(r)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFu(r); } }}
                         aria-current={selected}
                         className={
-                          "mb-px grid w-full gap-[2px] rounded-lg px-2.5 py-2 text-left transition-colors " +
+                          "mb-px grid w-full gap-[2px] rounded-lg px-2.5 py-2 text-left transition-colors group " +
                           (selected ? "bg-[var(--accent)]" : "hover:bg-[var(--hover)]")
                         }
                       >
@@ -393,14 +555,28 @@ export default function Home() {
                             {initials(r.person)}
                           </span>
                           <span className="truncate text-[13px] font-semibold">{r.person}</span>
-                          {r.suggested_label && (
-                            <span
-                              className="ml-auto whitespace-nowrap text-[10.5px] font-semibold"
-                              style={{ color: URGENCY_COLOR[u.key] }}
+                          <div className="ml-auto flex items-center gap-1">
+                            {r.suggested_label && (
+                              <span
+                                className="whitespace-nowrap text-[10.5px] font-semibold"
+                                style={{ color: URGENCY_COLOR[u.key] }}
+                              >
+                                {r.suggested_label}
+                              </span>
+                            )}
+                            <a
+                              href={larkDeepLink(r)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex-none rounded p-0.5 text-[11px] text-[var(--faint)] opacity-0 transition-opacity duration-100 group-hover:opacity-100 hover:bg-[var(--hover)] hover:text-[var(--primary)]"
+                              aria-label="Open this thread in Lark"
+                              title="Open this thread in Lark"
+                              tabIndex={-1}
                             >
-                              {r.suggested_label}
-                            </span>
-                          )}
+                              ↗
+                            </a>
+                          </div>
                         </div>
                         <div className="truncate pl-[28px] text-[12.5px] font-medium">
                           {r.about_subject || r.summary || "Flagged thread"}
@@ -408,11 +584,12 @@ export default function Home() {
                         <div className="truncate pl-[28px] text-[11.5px] text-[var(--muted-foreground)]">
                           {actionLine(r)}
                         </div>
-                      </button>
+                      </div>
                     </div>
                   );
                 });
               })()
+            )
             )}
           </div>
         </aside>
@@ -451,6 +628,7 @@ export default function Home() {
                           onClick={() => {
                             setFixOpen((o) => !o);
                             setUnflagOpen(false);
+                            setParkOpen(false);
                           }}
                           className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--primary)]"
                           title="Fix this — correct the status, date, or what-to-do (Hermes learns from it)"
@@ -459,14 +637,36 @@ export default function Home() {
                         </button>
                         <button
                           onClick={() => {
+                            setParkOpen((o) => !o);
+                            setUnflagOpen(false);
+                            setFixOpen(false);
+                          }}
+                          className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[#cb912f]"
+                          title="Park — unflag from Lark, resurfaces when they reply"
+                        >
+                          ⏸ Park
+                        </button>
+                        <button
+                          onClick={() => {
                             setUnflagOpen((o) => !o);
                             setFixOpen(false);
+                            setParkOpen(false);
                           }}
                           className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--edited)]"
                           title="Unflag — remove the Lark bookmark"
                         >
                           ⚑ Unflag
                         </button>
+                        <a
+                          href={larkDeepLink(fuCur)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-none rounded-md px-2 py-1 text-[11.5px] font-medium text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--primary)]"
+                          title={fuCur.flag_message_id ? "Jump to flagged message in Lark" : "Open chat in Lark"}
+                          aria-label={fuCur.flag_message_id ? "Jump to flagged message in Lark" : "Open chat in Lark"}
+                        >
+                          <span aria-hidden="true">↗</span> Open
+                        </a>
                       </div>
 
                       {/* state badges + corrected chip */}
@@ -674,6 +874,47 @@ export default function Home() {
                     </div>
                   )}
 
+                  {/* Park popover (⏸ Park) */}
+                  {parkOpen && (
+                    <div className="mb-3 rounded-[12px] border border-[#cb912f] bg-[color-mix(in_srgb,#cb912f_6%,transparent)] px-4 py-3.5">
+                      <div className="mb-1 text-[12px] font-semibold text-[#cb912f]">Park this thread</div>
+                      <div className="mb-2.5 text-[11.5px] text-[var(--muted-foreground)]">
+                        Unflag from Lark so it doesn&apos;t clutter your queue. Desk keeps the row — auto-resurfaces when they reply.
+                      </div>
+                      <input
+                        value={parkReason}
+                        onChange={(e) => setParkReason(e.target.value)}
+                        placeholder="why parking? (e.g. waiting for Edgar to reply on the MCP proposal)"
+                        className="mb-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-[#cb912f]"
+                      />
+                      <div className="mb-2.5 flex items-center gap-2">
+                        <span className="text-[11.5px] text-[var(--faint)]">🏷 Topic tag</span>
+                        <input
+                          value={parkTag}
+                          onChange={(e) => setParkTag(e.target.value)}
+                          placeholder="e.g. MCP Platform (groups related threads)"
+                          className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-[#cb912f]"
+                        />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={doPark}
+                          disabled={parking}
+                          className="inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-[13px] font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
+                          style={{ background: "#cb912f" }}
+                        >
+                          {parking ? "Parking…" : "⏸ Park"}
+                        </button>
+                        <button
+                          onClick={() => setParkOpen(false)}
+                          className="rounded-lg px-3 py-2 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover)]"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Unflag popover (⚑ Unflag) — quiet, deliberate, on-page */}
                   {unflagOpen && (
                     <div className="mb-3 rounded-[12px] border border-[var(--edited)] bg-[color-mix(in_srgb,var(--edited)_5%,transparent)] px-4 py-3.5">
@@ -812,6 +1053,7 @@ export default function Home() {
               <DraftComposer
                 fuHandle={fuHandle}
                 initialDraft={fuCur?.draft_text ?? ""}
+                pendingFix={fuCur?.pending_fix}
                 onSent={(handle) => {
                   const remaining = fuRows.filter((x) => x.handle !== handle);
                   setFuRows(remaining);
