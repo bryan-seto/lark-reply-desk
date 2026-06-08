@@ -1,19 +1,21 @@
 // Build a Lark applink that opens the flagged conversation in the native Lark app.
 //
-// IMPORTANT (verified 2026-06-09): there is NO reliable way to CONSTRUCT a
-// "jump to this exact message" deep link by hand. Lark itself returns a
-// `message_app_link` on every message (the same link "Copy link" produces) —
-// a `client/thread/open` URL carrying `open_thread_id` AND `thread_position`,
-// which is what actually lands on the specific message. The harvester now
-// captures that into `row.applink`.
+// HARD-WON LESSON (2026-06-09, three formats tested against Bryan's live Lark):
+//   1. message_link/open?messageId=om_...           → "This page is unavailable" (no such link)
+//   2. thread/open?...&thread_position=N (Lark's own message_app_link)
+//                                                    → launches Lark but DOES NOT navigate when the
+//                                                      app is already running (browser→app handoff
+//                                                      drops the in-app nav; known Electron behavior)
+//   3. chat/open?openChatId=oc_...                   → reliably navigates to the GROUP (top level)
 //
-// Precedence:
-//   1. row.applink            — Lark's own link (best; lands on the message)
-//   2. thread/open fallback   — when applink is missing but we have a thread
-//   3. chat/open fallback     — non-threaded flags (chat-level only)
+// So #3 is the ceiling for a browser→native-app handoff: it lands Bryan in the
+// right conversation (he scrolls to find the message). #2 looked "more correct"
+// but is worse in practice because it navigates nowhere. We deliberately use
+// chat/open even though row.applink (a thread/open link) is available.
 //
-// A hand-built `message_link/open?messageId=om_...` does NOT work (Lark shows
-// "This page is unavailable") and must never be used.
+// `applink` is still captured on the row as dormant data — if Lark fixes
+// browser-handoff navigation, or we add a "copy link" button (in-app paste works),
+// it's there. It is intentionally NOT used to build the click-through href.
 
 export type DeepLinkRow = {
   chat_id: string;
@@ -22,24 +24,9 @@ export type DeepLinkRow = {
 };
 
 export function larkDeepLink(row: DeepLinkRow): string {
-  // 1. Prefer Lark's own message link — it lands on the exact flagged message.
-  if (row.applink) {
-    return row.applink;
-  }
-
-  const chat = encodeURIComponent(row.chat_id);
-
-  // 2. Threaded flag without a stored applink → open the thread (lands in-thread,
-  //    just not on the exact message).
-  if (row.thread_id) {
-    const thread = encodeURIComponent(row.thread_id);
-    return (
-      `https://applink.larksuite.com/client/thread/open` +
-      `?open_chat_id=${chat}&open_thread_id=${thread}` +
-      `&openchatid=${chat}&openthreadid=${thread}`
-    );
-  }
-
-  // 3. Non-threaded flag → chat-level open.
-  return `https://applink.larksuite.com/client/chat/open?openChatId=${chat}`;
+  // chat/open is the only form that reliably navigates from an external browser
+  // into an already-running Lark desktop app. Lands at the group; user scrolls.
+  return `https://applink.larksuite.com/client/chat/open?openChatId=${encodeURIComponent(
+    row.chat_id,
+  )}`;
 }
