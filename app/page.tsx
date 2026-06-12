@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DraftComposer from "@/components/DraftComposer";
+import FollowUpAllModal from "@/components/FollowUpAllModal";
 import { larkDeepLink, larkSearchSnippet } from "@/lib/larkDeepLink";
 
 type ThreadMsg = { t: string; from: string; text: string; is_flagged?: boolean };
@@ -50,6 +51,7 @@ type FollowupRow = {
   parked_at?: number;
   parked_reason?: string;
   new_activity_since_park?: boolean;
+  validation?: { ok: boolean; failures: string[]; scrubbed: string };
 };
 
 const BRYAN_TOKENS = ["Bryan Se To", "Bryan"];
@@ -143,6 +145,8 @@ export default function Home() {
   const [fixing, setFixing] = useState(false);
   const [fixStatus, setFixStatus] = useState("");
   const [fixLearned, setFixLearned] = useState("");
+  const [showFollowUpAll, setShowFollowUpAll] = useState(false);
+  const [fuToast, setFuToast] = useState("");
 
   const sorted = useMemo(() => sortFu(fuRows), [fuRows]);
   const fuCur = fuRows.find((r) => r.handle === fuHandle) || null;
@@ -384,6 +388,19 @@ export default function Home() {
   // counts for the rail header (how many need action now)
   const dueNow = fuRows.filter((r) => (r.suggested_days_out ?? 99) <= 0).length;
 
+  // sendableCount for the Follow Up All button (trustGate logic inlined)
+  const today = new Date().toISOString().slice(0, 10);
+  const sendableCount = fuRows.filter((r) => {
+    if ((r.status ?? "pending") !== "pending") return false;
+    if (!r.draft_text?.trim()) return false;
+    if ((r.suggested_date ?? "9999") > today) return false;
+    if (r.followup_basis === "closed") return false;
+    if (r.is_monitoring) return false;
+    if (r.validation && !r.validation.ok) return false;
+    if (r.last_from === "You" && !r.pending_fix) return false;
+    return true;
+  }).length;
+
   return (
     <>
       <div className="grid h-screen w-screen grid-cols-[380px_1fr] overflow-hidden">
@@ -403,6 +420,14 @@ export default function Home() {
               <span className="rounded-full bg-[color-mix(in_srgb,var(--primary)_16%,transparent)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--primary)]">
                 {dueNow} due now
               </span>
+            )}
+            {sendableCount > 0 && (
+              <button
+                onClick={() => setShowFollowUpAll(true)}
+                className="ml-2 text-xs bg-[var(--primary)] text-white px-2.5 py-1 rounded-lg hover:opacity-90 transition-opacity font-medium"
+              >
+                ⚡ Follow up all ({sendableCount})
+              </button>
             )}
             <span className="mx-1 text-[var(--sidebar-border)]">|</span>
             <button
@@ -1095,6 +1120,23 @@ export default function Home() {
           )}
         </main>
       </div>
+
+      {showFollowUpAll && (
+        <FollowUpAllModal
+          rows={fuRows}
+          onClose={() => setShowFollowUpAll(false)}
+          onSent={({ sent, skipped }) => {
+            setShowFollowUpAll(false);
+            setFuToast(`✅ ${sent} sent${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
+            setTimeout(() => setFuToast(""), 5000);
+          }}
+        />
+      )}
+      {fuToast && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-[var(--card)] border border-[var(--border)] text-[var(--text)] text-sm px-4 py-2 rounded-lg shadow-lg">
+          {fuToast}
+        </div>
+      )}
 
       <div
         className={
