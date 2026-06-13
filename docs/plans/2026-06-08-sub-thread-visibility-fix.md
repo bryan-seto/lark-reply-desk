@@ -137,9 +137,9 @@ def _fetch_message_get(msg_id: str) -> dict | None:
    from pathlib import Path
    q = Path("/Users/user.seto/.hermes/profiles/user/state/lark-followup-queue.jsonl")
    rows = [json.loads(l) for l in q.read_text().splitlines() if l.strip()]
-   fajrin = next(r for r in rows if "Contact B" in r.get("person",""))
-   print("thread_len:", len(fajrin.get("thread_json") or []))
-   for m in fajrin.get("thread_json") or []:
+   contact_b = next(r for r in rows if "Contact B" in r.get("person",""))
+   print("thread_len:", len(contact_b.get("thread_json") or []))
+   for m in contact_b.get("thread_json") or []:
        print(f"  {m['t']} {m['from']}: {m['text'][:60]}")
    ```
 
