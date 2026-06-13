@@ -216,7 +216,7 @@ if (prior and prior.get("summary")
 **Verify after patching + re-harvesting Contact A row:**
 ```bash
 HOME=/Users/user.seto python3 \
-  /Users/user.seto/.hermes/profiles/user/daemons/flag_followup_harvest.py --once 2>&1 | grep -i kexin
+  /Users/user.seto/.hermes/profiles/user/daemons/flag_followup_harvest.py --once 2>&1 | grep -i "Contact A"
 ```
 Then check queue:
 ```bash
