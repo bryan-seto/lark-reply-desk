@@ -9,13 +9,13 @@ export const runtime = "nodejs";
 // child inherits HOME + nvm PATH, exactly like the send daemon). Best-effort:
 // on ANY error, returns [] so the picker degrades to "no matches" rather than
 // 500-ing. Read-only (search), never mutates.
-const LARK_CLI = "/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin/lark-cli";
-const NODE_BIN = "/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin";
+const LARK_CLI = "process.env.NODE_BIN ?? "/usr/local/bin"/lark-cli";
+const NODE_BIN = "process.env.NODE_BIN ?? "/usr/local/bin"";
 
 function run(args: string[], timeoutMs = 12000): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     const child = spawn(LARK_CLI, args, {
-      env: { ...process.env, HOME: "/Users/bryan.seto", PATH: `${NODE_BIN}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, HOME: process.env.HOME ?? "", PATH: `${NODE_BIN}:${process.env.PATH ?? ""}` },
     });
     let out = "";
     const timer = setTimeout(() => {

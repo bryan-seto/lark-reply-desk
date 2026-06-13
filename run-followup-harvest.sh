@@ -1,16 +1,19 @@
 #!/bin/bash
-# Flagged Follow-up Desk — weekday 6am harvest + ping wrapper.
-# Order (PRD v2): confirm app is live -> harvest flags into the queue -> THEN
-# self-DM Bryan the link, so clicking lands on a ready, populated page.
+# Flagged Follow-up Desk — weekday morning harvest + ping wrapper.
+# Order: confirm app is live -> harvest flags into the queue -> self-DM the link,
+# so clicking lands on a ready, populated page.
 # $0: plain local python + lark-cli OAuth (launchd GUI agent = keychain-OK).
 set -uo pipefail
 
-export PATH="/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-export HOME="/Users/bryan.seto"
-LARK_CLI="/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin/lark-cli"
-BRYAN_OPEN_ID="ou_18e15beecf4878ba9c8357613c2b4ad8"
-DAEMONS="/Users/bryan.seto/.hermes/profiles/bryan/daemons"
-QUEUE="/Users/bryan.seto/.hermes/profiles/bryan/state/lark-followup-queue.jsonl"
+export PATH="${HOME}/.nvm/versions/node/$(node --version 2>/dev/null | tr -d v || echo 'v20.0.0')/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export HOME="${HOME}"
+LARK_CLI="$(which lark-cli 2>/dev/null || echo 'lark-cli')"
+
+# Your Lark open_id for self-DM (run: lark-cli im +me to find yours)
+LARK_USER_ID="${LARK_USER_ID:-}"
+
+DAEMONS="${HERMES_DAEMONS:-${HOME}/.hermes/profiles/default/daemons}"
+QUEUE="${HERMES_STATE:-${HOME}/.hermes/profiles/default/state}/lark-followup-queue.jsonl"
 
 # 1) Confirm the Reply Desk app is live (launchd KeepAlive should keep it up;
 #    we do NOT start it here, only verify). Retry briefly in case of cold boot.
@@ -21,19 +24,14 @@ for i in 1 2 3 4 5 6; do
 done
 
 # 2) Harvest flags -> queue (the two-call read: flag-list + per-thread).
-#    On a stale user token the harvester now EXITS 3 and leaves the queue
-#    intact (it no longer wipes it). Re-mint the token non-interactively and
-#    retry once before giving up for this run.
+#    On a stale user token the harvester EXITS 3 and leaves the queue
+#    intact. Re-mint the token non-interactively and retry once.
 /usr/bin/python3 "$DAEMONS/flag_followup_harvest.py" --once
 HARVEST_RC=$?
 if [ "$HARVEST_RC" -eq 3 ]; then
-  # Harvester exit 3 = fetch_failed: a transient network blip OR a dead user token.
-  # Do NOT run `auth login --no-wait` here: device flow needs browser consent, so it
-  # can never re-mint unattended at 6am - it only churns the auth endpoint for nothing.
-  # A genuinely dead token is alerted out-of-band by com.bryan.lark-reauth-harvest-watch
-  # (reauth_harvest_watch.py), which pings Bryan to run `lark-cli auth login` himself.
-  # So here we only retry ONCE for the transient case, after a short pause to let a
-  # network blip clear.
+  # Exit 3 = fetch_failed: transient network blip OR dead user token.
+  # Device flow needs browser consent — cannot re-mint unattended.
+  # Alert is sent out-of-band by the reauth watch script.
   sleep 3
   /usr/bin/python3 "$DAEMONS/flag_followup_harvest.py" --once
   HARVEST_RC=$?
@@ -49,20 +47,17 @@ except Exception:
     print(0)
 ")
 
-# 4) Ping Bryan's self-DM with the LITERAL link (only if there's something + app up).
-#    QUIET=1 (set by the periodic refresh job) skips the ping entirely — we don't
-#    want a "morning ya" DM every 15 min, only on the 6am wake-up harvest.
+# 4) Self-DM with the desk link (only if there's something + app is up).
+#    QUIET=1 (set by the periodic refresh job) skips the ping.
 if [ "${QUIET:-0}" = "1" ]; then
   exit 0
 fi
-if [ "$N" -gt 0 ] && [ "$APP_OK" -eq 1 ]; then
-  MSG="morning ya 🌅 $N flagged follow-ups ready to review -> http://localhost:3100/ (Flagged tab)"
-  "$LARK_CLI" im +messages-send --as user --user-id "$BRYAN_OPEN_ID" \
+if [ "$N" -gt 0 ] && [ "$APP_OK" -eq 1 ] && [ -n "$LARK_USER_ID" ]; then
+  MSG="morning 🌅 $N flagged follow-ups ready -> http://localhost:3100/ (Flagged tab)"
+  "$LARK_CLI" im +messages-send --as user --user-id "$LARK_USER_ID" \
     --msg-type text --text "$MSG" >/dev/null 2>&1
-elif [ "$N" -gt 0 ] && [ "$APP_OK" -eq 0 ]; then
-  # App down at ping time: still tell him, but flag that he may need to wait a moment.
-  MSG="morning ya 🌅 $N flagged follow-ups harvested. open http://localhost:3100/ (Flagged tab) - give it a few sec if it's cold"
-  "$LARK_CLI" im +messages-send --as user --user-id "$BRYAN_OPEN_ID" \
+elif [ "$N" -gt 0 ] && [ "$APP_OK" -eq 0 ] && [ -n "$LARK_USER_ID" ]; then
+  MSG="morning 🌅 $N flagged follow-ups ready (desk still starting up, give it a moment) -> http://localhost:3100/ (Flagged tab)"
+  "$LARK_CLI" im +messages-send --as user --user-id "$LARK_USER_ID" \
     --msg-type text --text "$MSG" >/dev/null 2>&1
 fi
-# N==0: stay silent (nothing to follow up on).

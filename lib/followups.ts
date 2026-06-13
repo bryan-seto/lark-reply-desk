@@ -4,7 +4,7 @@
 // sends go through the daemon (Option B) with queue:"followup".
 import { promises as fs } from "fs";
 
-const STATE_DIR = "/Users/bryan.seto/.hermes/profiles/bryan/state";
+const STATE_DIR = "process.env.HERMES_STATE_DIR ?? (process.env.HOME + "/.hermes/profiles/default/state")";
 export const FOLLOWUP_QUEUE_PATH = `${STATE_DIR}/lark-followup-queue.jsonl`;
 
 export type FollowupThreadMsg = { t: string; from: string; text: string; is_flagged?: boolean };
@@ -67,7 +67,7 @@ async function readJsonl<T>(path: string): Promise<T[]> {
 }
 
 // Preserve the harvester's file order (newest-flagged / latest-activity first).
-// Do NOT re-sort by drafted_at — the harvester already encodes Bryan's preferred
+// Do NOT re-sort by drafted_at — the harvester already encodes the user's preferred
 // order, and every row in a single harvest shares ~the same drafted_at.
 export async function readFollowups(
   status: "pending" | "sent" | "parked" = "pending"

@@ -5,7 +5,7 @@
 import { promises as fs } from "fs";
 import { randomUUID } from "crypto";
 
-const STATE_DIR = "/Users/bryan.seto/.hermes/profiles/bryan/state";
+const STATE_DIR = "process.env.HERMES_STATE_DIR ?? (process.env.HOME + "/.hermes/profiles/default/state")";
 export const QUEUE_PATH = `${STATE_DIR}/lark-reply-desk-queue.jsonl`;
 export const CMD_PATH = `${STATE_DIR}/lark-reply-desk-commands.jsonl`;
 export const RESULTS_PATH = `${STATE_DIR}/lark-reply-desk-results.jsonl`;

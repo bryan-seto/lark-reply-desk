@@ -1,11 +1,11 @@
 # Sub-Thread Visibility Fix Implementation Plan
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
+> **Implementation note:** Use subagent-driven-development skill to implement this plan task-by-task.
 
 **Goal:** When a flagged group-chat message has replies in a Lark sub-thread (omt_), include those replies in `thread_json` so the desk shows the full conversation — not just top-level channel messages.
 
 **Root cause (confirmed from code + live queue data):**
-`fetch_thread()` in `flag_followup_harvest.py` has two paths. For non-threaded flags (`om_` prefix, no `thread_id` in flag-list), it uses `_chat_window()` which calls `im +chat-messages-list` — a Lark API that returns **top-level messages only**. Sub-thread replies (omt_) are structurally invisible to this call. The Fajrin flag (`fu_om_x100b6ecbd28970b8e158418`) hits this path and shows only 2 top-level messages, missing any in-thread replies.
+`fetch_thread()` in `flag_followup_harvest.py` has two paths. For non-threaded flags (`om_` prefix, no `thread_id` in flag-list), it uses `_chat_window()` which calls `im +chat-messages-list` — a Lark API that returns **top-level messages only**. Sub-thread replies (omt_) are structurally invisible to this call. The Contact B flag (`fu_om_x100b6ecbd28970b8e158418`) hits this path and shows only 2 top-level messages, missing any in-thread replies.
 
 **Fix approach:**
 In the non-threaded branch (lines 311–317 of `flag_followup_harvest.py`), after pulling the chat window, inspect the raw flagged message's `thread_id` field. If one is present, call `_thread_all()` on it and merge replies into the window. No UI changes needed — the UI already renders `thread_json` messages correctly.
@@ -15,8 +15,8 @@ In the non-threaded branch (lines 311–317 of `flag_followup_harvest.py`), afte
 **Files touched:** `flag_followup_harvest.py` only (daemon repo).
 
 **Repo roots (two separate git repos — commits must be separate):**
-- Daemon: `/Users/bryan.seto/.hermes/profiles/bryan`
-- UI (no changes): `/Users/bryan.seto/lark-reply-desk`
+- Daemon: `/Users/user.seto/.hermes/profiles/user`
+- UI (no changes): `/Users/user.seto/lark-reply-desk`
 
 ---
 
@@ -28,7 +28,7 @@ In the non-threaded branch (lines 311–317 of `flag_followup_harvest.py`), afte
 2. ⚠️ The flagged ROOT (`om_x100b6ecbd28970b8e1584182a38c600`) is **NOT returned** by `chat-messages-list`. It is a nested sub-thread root (its own `root_id = om_x100dcf344...` means it lives inside a parent thread). Lark never surfaces nested sub-thread roots in the chat list API.
 3. Therefore `_fetch_single_raw` (which uses `chat-messages-list`) also cannot recover the root.
 4. ✅ All 14+ sub-thread replies ARE in the chat window, all with `thread_id: "omt_197a710d69ce99b9"`.
-5. Fajrin replied substantively — 14 messages in that sub-thread. The desk shows 2 because the root is invisible.
+5. Contact B replied substantively — 14 messages in that sub-thread. The desk shows 2 because the root is invisible.
 
 **Fix path decided: Task 1 (see below)** — add `_fetch_message_get` helper, detect thread_id in window, recover root directly, combine.
 
@@ -36,7 +36,7 @@ In the non-threaded branch (lines 311–317 of `flag_followup_harvest.py`), afte
 
 ## Task 1 — Fix `fetch_thread()`: recover nested sub-thread root via `message-get`
 
-**File:** `/Users/bryan.seto/.hermes/profiles/bryan/daemons/flag_followup_harvest.py`
+**File:** `/Users/user.seto/.hermes/profiles/user/daemons/flag_followup_harvest.py`
 
 ### Step 1.1 — Add `_fetch_message_get` helper (after `_fetch_single_raw`, ~line 228)
 
@@ -120,30 +120,30 @@ def _fetch_message_get(msg_id: str) -> dict | None:
 
 ---
 
-## Task 2 — Smoke-test: verify Fajrin row now includes sub-thread replies
+## Task 2 — Smoke-test: verify Contact B row now includes sub-thread replies
 
 **Steps:**
 
 1. Run the harvester in `--once` mode:
    ```bash
-   cd /Users/bryan.seto/.hermes/profiles/bryan/daemons
-   HOME=/Users/bryan.seto python3 flag_followup_harvest.py --once 2>&1 | tail -20
+   cd /Users/user.seto/.hermes/profiles/user/daemons
+   HOME=/Users/user.seto python3 flag_followup_harvest.py --once 2>&1 | tail -20
    ```
-   Expected: log line `non-threaded flag merged sub-thread omt_...: +N msgs total=M` for the Fajrin row (if Fajrin has replied in-thread). If Fajrin genuinely hasn't replied, `thread_len` stays at 2 — that's correct.
+   Expected: log line `non-threaded flag merged sub-thread omt_...: +N msgs total=M` for the Contact B row (if Contact B has replied in-thread). If Contact B genuinely hasn't replied, `thread_len` stays at 2 — that's correct.
 
 2. Read the updated queue row:
    ```python
    import json
    from pathlib import Path
-   q = Path("/Users/bryan.seto/.hermes/profiles/bryan/state/lark-followup-queue.jsonl")
+   q = Path("/Users/user.seto/.hermes/profiles/user/state/lark-followup-queue.jsonl")
    rows = [json.loads(l) for l in q.read_text().splitlines() if l.strip()]
-   fajrin = next(r for r in rows if "Fajrin" in r.get("person",""))
+   fajrin = next(r for r in rows if "Contact B" in r.get("person",""))
    print("thread_len:", len(fajrin.get("thread_json") or []))
    for m in fajrin.get("thread_json") or []:
        print(f"  {m['t']} {m['from']}: {m['text'][:60]}")
    ```
 
-3. Open the desk at `http://localhost:3100` and select the Fajrin row. Verify "Show full conversation (N messages)" count is higher and sub-thread replies are visible.
+3. Open the desk at `http://localhost:3100` and select the Contact B row. Verify "Show full conversation (N messages)" count is higher and sub-thread replies are visible.
 
 4. Spot-check 2–3 other `fu_om_` (non-threaded) rows to confirm they were not broken (thread_len should stay the same or increase, never decrease).
 
@@ -151,7 +151,7 @@ def _fetch_message_get(msg_id: str) -> dict | None:
 
 ## Task 3 — Update skill pitfall notes
 
-**File:** `/Users/bryan.seto/.hermes/profiles/bryan/skills/lark-flagged-follow-up/references/required-read-path-pitfalls.md`
+**File:** `/Users/user.seto/.hermes/profiles/user/skills/lark-flagged-follow-up/references/required-read-path-pitfalls.md`
 
 Add a new section at the end:
 
@@ -174,7 +174,7 @@ Add a new section at the end:
 Daemon files only touch one repo:
 
 ```bash
-cd /Users/bryan.seto/.hermes/profiles/bryan
+cd /Users/user.seto/.hermes/profiles/user
 git add daemons/flag_followup_harvest.py \
         skills/lark-flagged-follow-up/references/required-read-path-pitfalls.md
 git commit -m "fix(harvester): merge sub-thread replies for non-threaded (om_) flags
@@ -186,10 +186,10 @@ Fix: after chat-window pull, check flagged message for thread_id;
 if present, call _thread_all() and merge replies in (deduped, sorted).
 Logged as 'non-threaded flag merged sub-thread omt_...: +N msgs'.
 
-Closes: Fajrin FSC/LCC flag showing 2 messages instead of full thread."
+Closes: Contact B FSC/LCC flag showing 2 messages instead of full thread."
 ```
 
-**Do NOT** `git add` from `/Users/bryan.seto/lark-reply-desk` — no UI files were changed.
+**Do NOT** `git add` from `/Users/user.seto/lark-reply-desk` — no UI files were changed.
 
 ---
 
@@ -199,7 +199,7 @@ Closes: Fajrin FSC/LCC flag showing 2 messages instead of full thread."
 - [x] `fetch_thread()` patch clean, no syntax errors (`python3 -m py_compile` passes via lint)
 - [x] `_fetch_message_get` helper added (uses `+messages-mget`, `data.messages`)
 - [x] Harvester ran without error: 16 flags → 15 threads → 14 drafts
-- [x] Fajrin row: was 2 messages → now 16 (full sub-thread visible)
+- [x] Contact B row: was 2 messages → now 16 (full sub-thread visible)
 - [x] No existing `omt_` rows shrank (one 6→5 = natural new harvest, not regression)
 - [x] Skill pitfall notes updated with root cause + regression guard
 - [x] Committed to daemon repo: `6d38bd3`

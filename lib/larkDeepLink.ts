@@ -1,9 +1,9 @@
 // Helpers for the "↗ Open in Lark" affordance.
 //
-// CEILING (verified against Bryan's live Lark, 2026-06-09): a browser→native-app
+// CEILING (verified against the user's live Lark, 2026-06-09): a browser→native-app
 // handoff can only reliably land in the GROUP (chat/open). thread/open does not
 // navigate at all, and message/position params on chat/open are ignored. So the
-// deep link gets Bryan into the right group; an in-chat search (⌘F) on the
+// deep link gets the user into the right group; an in-chat search (⌘F) on the
 // flagged message text is what jumps to the exact message.
 
 export type DeepLinkRow = {

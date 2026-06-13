@@ -44,7 +44,7 @@ export function trustGate(row: {
     // No validation record yet — treat as needs-review but don't block
     // (validation runs on next harvest cycle)
   }
-  // Stale: Bryan replied last AND no pending fix = ball in their court
+  // Stale: user replied last AND no pending fix = ball in their court
   if (row.last_from === "You" && !row.pending_fix) {
     reasons.push("you replied last — waiting on them");
   }

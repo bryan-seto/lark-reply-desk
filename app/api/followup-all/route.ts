@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const CMD_PATH = "/Users/bryan.seto/.hermes/profiles/bryan/state/lark-reply-desk-commands.jsonl";
+const CMD_PATH = "process.env.HERMES_STATE_DIR ?? (process.env.HOME + "/.hermes/profiles/default/state")/lark-reply-desk-commands.jsonl";
 
 export async function POST(request: Request) {
   let body: { handle?: string; draft_text?: string; batch_id?: string };

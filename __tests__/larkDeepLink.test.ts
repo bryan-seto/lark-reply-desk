@@ -39,8 +39,8 @@ describe("larkSearchSnippet", () => {
   });
 
   it("strips leading mention/hash/emoji-ish noise", () => {
-    expect(larkSearchSnippet("@Fajrin can you clean column F")).toBe(
-      "Fajrin can you clean column F",
+    expect(larkSearchSnippet("@Sam can you clean column F")).toBe(
+      "Sam can you clean column F",
     );
   });
 

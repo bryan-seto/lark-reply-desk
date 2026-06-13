@@ -54,9 +54,9 @@ type FollowupRow = {
   validation?: { ok: boolean; failures: string[]; scrubbed: string };
 };
 
-const BRYAN_TOKENS = ["Bryan Se To", "Bryan"];
-const isBryan = (from: string) =>
-  !!from && (from === "You" || BRYAN_TOKENS.some((tok) => from.includes(tok)));
+const OWNER_TOKENS: string[] = []; // Add name fragments that identify you as the sender (e.g. ["Your Name"])
+const isOwner = (from: string) =>
+  !!from && (from === "You" || OWNER_TOKENS.some((tok) => from.includes(tok)));
 const initials = (n: string) =>
   (n || "?")
     .split(" ")
@@ -74,7 +74,7 @@ const ageLabel = (d: number) => (d <= 0 ? "today" : `${d}d`);
 const isRawId = (s?: string) => !!s && /^(oc_|om_|omt_)/.test(s);
 const prettyChat = (s?: string) => (!s || isRawId(s) ? "" : s);
 
-// Urgency = WHEN Bryan must act, derived from the suggested follow-up date
+// Urgency = WHEN the user must act, derived from the suggested follow-up date
 // (suggested_days_out), NOT when the message was last sent. Lower rank = sooner.
 type Urgency = { rank: number; label: string; key: string };
 const urgencyOf = (r: FollowupRow): Urgency => {
@@ -1050,7 +1050,7 @@ export default function Home() {
                     <>
                       <div className="flex-1" />
                       {(fuCur.thread_json || []).map((b, i) => {
-                        const me = isBryan(b.from);
+                        const me = isOwner(b.from);
                         const flagged = b.is_flagged;
                         return (
                           <div key={i} className={"mb-4 max-w-[82%] " + (me ? "ml-auto" : "")}>

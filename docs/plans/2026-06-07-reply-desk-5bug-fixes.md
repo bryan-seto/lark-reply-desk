@@ -1,8 +1,8 @@
 # Reply Desk — 5-Bug Fix Plan
 
-> **For Hermes:** Implement task-by-task. Each task is a self-contained patch with verification.
+> **Implementation note:** Implement task-by-task. Each task is a self-contained patch with verification.
 
-**Goal:** Fix five confirmed bugs in the Lark Reply Desk flagged-follow-up system — wrong date on Kexin, slow unflag UX, 1-msg Fajrin stub, "team" identity mystery, and Sunday nudges.
+**Goal:** Fix five confirmed bugs in the Lark Reply Desk flagged-follow-up system — wrong date on Contact A, slow unflag UX, 1-msg Contact B stub, "team" identity mystery, and Sunday nudges.
 
 **Architecture:**
 - `flag_followup_harvest.py` — Python harvester that reads flags + calls Claude → writes `lark-followup-queue.jsonl`
@@ -19,9 +19,9 @@
 
 | # | Bug | Root cause | Files |
 |---|-----|-----------|-------|
-| 1 | Kexin says "revert by today" — should be mid-June | `analyze_thread` returns `timing_tokens:[]`, `explicit_date:""` even though prompt says to resolve "mid june ish". Row is stale (`last_activity` 32d ago) so the cache reuse path fires — BUT `explicit_date` was never stored in the original harvest (field absent, not empty string), so the cache serves empty explicit_date and the heuristic stamps today. | `flag_followup_harvest.py` cache path + `_SUMMARY_PROMPT` + re-harvest Kexin |
+| 1 | Contact A says "revert by today" — should be mid-June | `analyze_thread` returns `timing_tokens:[]`, `explicit_date:""` even though prompt says to resolve "mid june ish". Row is stale (`last_activity` 32d ago) so the cache reuse path fires — BUT `explicit_date` was never stored in the original harvest (field absent, not empty string), so the cache serves empty explicit_date and the heuristic stamps today. | `flag_followup_harvest.py` cache path + `_SUMMARY_PROMPT` + re-harvest Contact A |
 | 2 | Unflag spins forever | `unflagViaDaemon` has a 12 s timeout; the daemon's `POLL_INTERVAL` is 60 s — the UI always hits the deadline and shows "queued" with no feedback on when it'll actually resolve. | `lib/state.ts` — increase timeout to 90 s; `app/page.tsx` — show "queued" banner instead of spinner |
-| 3 | Fajrin shows 1-msg stub | Flag is non-threaded (`thread_id:""`); `_fetch_single_raw` is called for the flagged msg (ok), but no surrounding context is fetched. The HARD RULE added 2026-06-05 says "never pad with channel window" — but we should still use the chat-window fallback when the thread_id is empty, which is the designed path. Bug: `thread_id` is empty and `_fetch_single_raw` returns 1 msg, then `fetch_thread` returns just that 1 msg because it fell past the `if thread_id:` block. The chat window (`_chat_window` with ±72h) is never called for non-threaded flags. | `flag_followup_harvest.py` `fetch_thread()` non-threaded branch |
+| 3 | Contact B shows 1-msg stub | Flag is non-threaded (`thread_id:""`); `_fetch_single_raw` is called for the flagged msg (ok), but no surrounding context is fetched. The HARD RULE added 2026-06-05 says "never pad with channel window" — but we should still use the chat-window fallback when the thread_id is empty, which is the designed path. Bug: `thread_id` is empty and `_fetch_single_raw` returns 1 msg, then `fetch_thread` returns just that 1 msg because it fell past the `if thread_id:` block. The chat window (`_chat_window` with ±72h) is never called for non-threaded flags. | `flag_followup_harvest.py` `fetch_thread()` non-threaded branch |
 | 4 | "team" / no name — "who is this person?" | `from_raw` is `None` on all thread messages because the chat window (`_chat_window`) returns messages whose `sender` dict is absent or `{}` on some Lark endpoints. `_normalize_msgs` does `sender.get("name") or "?"` which gives `"?"`. `derive_person` skips `"?"`. `chat_name` fallback is `oc_42050afcab15768` (raw ID, unresolved). | `flag_followup_harvest.py` — add a `lark-cli im chat-info` lookup to resolve `chat_name` when it's an opaque `oc_` ID, so `person` gets a real name |
 | 5 | Sunday nudges | `suggest_followup_date` fallback: when overdue, sets `target = today` unconditionally. `_add_working_days(start, 0)` already skips to Monday when start is a weekend — just need to run overdue `today` through it. One-liner fix. | `flag_followup_harvest.py` `suggest_followup_date()` |
 
@@ -29,9 +29,9 @@
 
 ## Pre-flight Checks (already done)
 
-- [x] Confirmed queue row: `Kexin.explicit_date = ""`, `timing_tokens = []`, `followup_basis = "their_commitment"`, `last_activity` = 32d ago → cache path fires
+- [x] Confirmed queue row: `Contact A.explicit_date = ""`, `timing_tokens = []`, `followup_basis = "their_commitment"`, `last_activity` = 32d ago → cache path fires
 - [x] Confirmed: `unflagViaDaemon` timeout = 12 000 ms, daemon `POLL_INTERVAL` = 60 s → always queued
-- [x] Confirmed: Fajrin `thread_id = ""`, `thread_len = 1` → non-threaded, 1-msg stub
+- [x] Confirmed: Contact B `thread_id = ""`, `thread_len = 1` → non-threaded, 1-msg stub
 - [x] Confirmed: Call-scheduling `from_raw = None` on all msgs, `chat_name = "oc_42050afcab15768"`
 - [x] Confirmed: `_add_working_days(today, 0)` returns next working day → one-liner fixes Sunday
 
@@ -41,7 +41,7 @@
 
 **Objective:** Overdue items never land on Sat/Sun — push to next Monday.
 
-**File:** `/Users/bryan.seto/.hermes/profiles/bryan/daemons/flag_followup_harvest.py`
+**File:** `/Users/user.seto/.hermes/profiles/user/daemons/flag_followup_harvest.py`
 
 **Lines ~548–550:**
 ```python
@@ -67,7 +67,7 @@ Expected: `2026-06-09`
 
 ---
 
-## Task 2 — Fix Fajrin 1-msg stub (non-threaded chat window)
+## Task 2 — Fix Contact B 1-msg stub (non-threaded chat window)
 
 **Objective:** Non-threaded flags get surrounding chat context, not just the lone message.
 
@@ -101,12 +101,12 @@ if root and not _is_system_noise(root):
 return []
 ```
 
-**Verify:** After patch, do a targeted re-harvest of Fajrin's handle:
+**Verify:** After patch, do a targeted re-harvest of Contact B's handle:
 ```bash
-cd /Users/bryan.seto/.hermes/profiles/bryan/daemons
-HOME=/Users/bryan.seto python3 -c "
+cd /Users/user.seto/.hermes/profiles/user/daemons
+HOME=/Users/user.seto python3 -c "
 import flag_followup_harvest as h
-# Print the thread for Fajrin's chat
+# Print the thread for Contact B's chat
 msgs = h._chat_window('oc_470b43c6691c55e', 1748944480000, pre_h=6, post_h=72)
 print(len(msgs), 'msgs in window')
 for m in msgs[:5]: print(m.get('create_time','')[:10], m.get('sender',{}).get('name','?'), str(m.get('content',''))[:60])
@@ -155,8 +155,8 @@ if not chat_name or re.match(r'^oc_[0-9a-f]+$', chat_name):
 
 **Verify:**
 ```bash
-HOME=/Users/bryan.seto python3 -c "
-import sys; sys.path.insert(0,'/Users/bryan.seto/.hermes/profiles/bryan/daemons')
+HOME=/Users/user.seto python3 -c "
+import sys; sys.path.insert(0,'/Users/user.seto/.hermes/profiles/user/daemons')
 import flag_followup_harvest as h
 print(h._resolve_chat_name('oc_42050afcab15768', 'oc_42050afcab15768'))
 "
@@ -165,9 +165,9 @@ Expected: a real chat/group name (not the raw ID).
 
 ---
 
-## Task 4 — Fix Kexin explicit_date not extracted (cache miss + prompt tuning)
+## Task 4 — Fix Contact A explicit_date not extracted (cache miss + prompt tuning)
 
-**Objective:** The Kexin row's `explicit_date` is blank because the stale cache reuse path fires (last_activity unchanged at 32d) and the original row never had `explicit_date` populated (field absent → `""` on read). Fix has two parts:
+**Objective:** The Contact A row's `explicit_date` is blank because the stale cache reuse path fires (last_activity unchanged at 32d) and the original row never had `explicit_date` populated (field absent → `""` on read). Fix has two parts:
 
 **Part A — Cache path must preserve `explicit_date`** (line ~784, the `if prior and prior.get("summary")` cache reuse block):
 ```python
@@ -199,8 +199,8 @@ meta = {
 }
 ```
 
-**Part B — Force re-analyze Kexin's row** by touching the cache guard.
-The cache fires when `prior.get("summary")` is non-empty AND `prior.get("last_activity") == latest["t"]`. Since Kexin's thread has no new messages, the re-analyze won't auto-trigger.
+**Part B — Force re-analyze Contact A's row** by touching the cache guard.
+The cache fires when `prior.get("summary")` is non-empty AND `prior.get("last_activity") == latest["t"]`. Since Contact A's thread has no new messages, the re-analyze won't auto-trigger.
 
 Fix: bust the cache for rows where `explicit_date` is blank but `timing_quote` contains a month-reference phrase. Add this guard just before the cache-reuse `if`:
 ```python
@@ -213,19 +213,19 @@ if (prior and prior.get("summary")
     prior = None   # force re-analyze
 ```
 
-**Verify after patching + re-harvesting Kexin row:**
+**Verify after patching + re-harvesting Contact A row:**
 ```bash
-HOME=/Users/bryan.seto python3 \
-  /Users/bryan.seto/.hermes/profiles/bryan/daemons/flag_followup_harvest.py --once 2>&1 | grep -i kexin
+HOME=/Users/user.seto python3 \
+  /Users/user.seto/.hermes/profiles/user/daemons/flag_followup_harvest.py --once 2>&1 | grep -i kexin
 ```
 Then check queue:
 ```bash
 python3 -c "
 import json
-with open('/Users/bryan.seto/.hermes/profiles/bryan/state/lark-followup-queue.jsonl') as f:
+with open('/Users/user.seto/.hermes/profiles/user/state/lark-followup-queue.jsonl') as f:
     for line in f:
         r = json.loads(line)
-        if 'Kexin' in (r.get('person') or ''):
+        if 'Contact A' in (r.get('person') or ''):
             print('explicit_date:', r.get('explicit_date'))
             print('suggested_label:', r.get('suggested_label'))
             print('suggested_reason:', r.get('suggested_reason'))
@@ -275,7 +275,7 @@ if (r.status === "unflagged") {
 
 **Rebuild Next.js after TS changes:**
 ```bash
-cd /Users/bryan.seto/lark-reply-desk
+cd /Users/user.seto/lark-reply-desk
 npm run build
 ```
 Then restart the dev server (or launchd service picks it up via `run-reply-desk.sh`).
@@ -288,34 +288,34 @@ Then restart the dev server (or launchd service picks it up via `run-reply-desk.
 
 ```bash
 # 1. Run a fresh harvest
-HOME=/Users/bryan.seto python3 \
-  /Users/bryan.seto/.hermes/profiles/bryan/daemons/flag_followup_harvest.py --once
+HOME=/Users/user.seto python3 \
+  /Users/user.seto/.hermes/profiles/user/daemons/flag_followup_harvest.py --once
 
-# 2. Verify Kexin — should show mid-June, not today
+# 2. Verify Contact A — should show mid-June, not today
 python3 -c "
 import json
-with open('/Users/bryan.seto/.hermes/profiles/bryan/state/lark-followup-queue.jsonl') as f:
+with open('/Users/user.seto/.hermes/profiles/user/state/lark-followup-queue.jsonl') as f:
     for line in f:
         r = json.loads(line)
-        if 'Kexin' in (r.get('person') or ''):
-            print('Kexin label:', r.get('suggested_label'))
-            print('Kexin reason:', r.get('suggested_reason'))
+        if 'Contact A' in (r.get('person') or ''):
+            print('Contact A label:', r.get('suggested_label'))
+            print('Contact A reason:', r.get('suggested_reason'))
 "
 
-# 3. Verify Fajrin — thread_len should be > 1
+# 3. Verify Contact B — thread_len should be > 1
 python3 -c "
 import json
-with open('/Users/bryan.seto/.hermes/profiles/bryan/state/lark-followup-queue.jsonl') as f:
+with open('/Users/user.seto/.hermes/profiles/user/state/lark-followup-queue.jsonl') as f:
     for line in f:
         r = json.loads(line)
-        if 'Fajrin' in (r.get('person') or ''):
-            print('Fajrin thread_len:', len(r.get('thread_json', [])))
+        if 'Contact B' in (r.get('person') or ''):
+            print('Contact B thread_len:', len(r.get('thread_json', [])))
 "
 
 # 4. Verify Call-scheduling — person should not be 'team' (or chat_name should be resolved)
 python3 -c "
 import json
-with open('/Users/bryan.seto/.hermes/profiles/bryan/state/lark-followup-queue.jsonl') as f:
+with open('/Users/user.seto/.hermes/profiles/user/state/lark-followup-queue.jsonl') as f:
     for line in f:
         r = json.loads(line)
         if 'Call scheduling' in (r.get('about_subject') or ''):
@@ -325,7 +325,7 @@ with open('/Users/bryan.seto/.hermes/profiles/bryan/state/lark-followup-queue.js
 
 # 5. Sunday fix — simulate: no easy live test today (it IS Sunday); check code manually
 grep -A4 "target = _add_working_days" \
-  /Users/bryan.seto/.hermes/profiles/bryan/daemons/flag_followup_harvest.py | head -8
+  /Users/user.seto/.hermes/profiles/user/daemons/flag_followup_harvest.py | head -8
 ```
 
 ---
@@ -333,11 +333,11 @@ grep -A4 "target = _add_working_days" \
 ## Commit
 
 ```bash
-cd /Users/bryan.seto/.hermes/profiles/bryan/daemons
+cd /Users/user.seto/.hermes/profiles/user/daemons
 git add flag_followup_harvest.py
-git commit -m "fix: 5 reply-desk bugs — sunday nudge, Fajrin stub, chat name, Kexin date cache, unflag UX"
+git commit -m "fix: 5 reply-desk bugs — sunday nudge, Contact B stub, chat name, Contact A date cache, unflag UX"
 
-cd /Users/bryan.seto/lark-reply-desk
+cd /Users/user.seto/lark-reply-desk
 git add lib/state.ts app/page.tsx
 git commit -m "fix: unflag UX — raise timeout to 90s, show queued banner instead of infinite spinner"
 ```

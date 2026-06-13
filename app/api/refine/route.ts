@@ -8,8 +8,8 @@ export const runtime = "nodejs";
 // Obsidian vault and memory files. We shell out to the daemon CLI rather than
 // re-implement Claude/Obsidian/memory reads in Node — same pattern as sends.
 const PY = "/usr/bin/python3";
-const CLI = "/Users/bryan.seto/.hermes/profiles/bryan/daemons/refine_followup_cli.py";
-const NODE_BIN = "/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin";
+const CLI = "process.env.HERMES_DAEMONS_DIR ?? (process.env.HOME + "/.hermes/profiles/default/daemons")/refine_followup_cli.py";
+const NODE_BIN = "process.env.NODE_BIN ?? "/usr/local/bin"";
 
 type RefineBody = {
   handle?: string;
@@ -22,7 +22,7 @@ type RefineBody = {
 function runCli(args: string[], timeoutMs = 60000): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
     const child = spawn(PY, [CLI, ...args], {
-      env: { ...process.env, HOME: "/Users/bryan.seto", PATH: `${NODE_BIN}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, HOME: process.env.HOME ?? "", PATH: `${NODE_BIN}:${process.env.PATH ?? ""}` },
     });
     let out = "";
     let err = "";

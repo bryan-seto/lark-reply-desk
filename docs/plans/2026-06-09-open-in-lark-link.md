@@ -1,19 +1,19 @@
 # Plan: "Open in Lark" Deep Link Button
 
 **Date:** 2026-06-09
-**Feature:** Add an "Open in Lark" link to each card in the Reply Desk so Bryan can jump directly to the flagged message/chat in Lark with one click.
+**Feature:** Add an "Open in Lark" link to each card in the Reply Desk so You can jump directly to the flagged message/chat in Lark with one click.
 
 ---
 
 ## Problem
 
-When Bryan needs context (especially P2P), he has to manually navigate to Lark, find the chat, and scroll to the message. The desk has `flag_message_id` and `chat_id` on every row — enough to build a direct deep link.
+When You needs context (especially P2P), he has to manually navigate to Lark, find the chat, and scroll to the message. The desk has `flag_message_id` and `chat_id` on every row — enough to build a direct deep link.
 
 ---
 
 ## Deep Link Format (Lark global applink)
 
-Bryan's org is on Lark global (larksuite.com) — confirmed from `mom_pipeline/executors.py`.
+You's org is on Lark global (larksuite.com) — confirmed from `mom_pipeline/executors.py`.
 
 - **Specific message:** `https://applink.larksuite.com/client/message_link/open?messageId={flag_message_id}`  
   (works when `flag_message_id` is present, `om_...` format)
@@ -27,8 +27,8 @@ Opens in a new browser tab (`target="_blank"`). On macOS desktop Lark this appli
 ## Scope
 
 Two files:
-- `/Users/bryan.seto/lark-reply-desk/app/page.tsx` — link placements only (no helper function here)
-- `/Users/bryan.seto/lark-reply-desk/lib/larkDeepLink.ts` — **new file**, exports the pure helper function (required for testability)
+- `/Users/user.seto/lark-reply-desk/app/page.tsx` — link placements only (no helper function here)
+- `/Users/user.seto/lark-reply-desk/lib/larkDeepLink.ts` — **new file**, exports the pure helper function (required for testability)
 
 No backend changes. No API changes. No queue schema changes.
 
@@ -37,7 +37,7 @@ No backend changes. No API changes. No queue schema changes.
 ## Tasks
 
 ### Task 1 — New file `lib/larkDeepLink.ts`
-Create `/Users/bryan.seto/lark-reply-desk/lib/larkDeepLink.ts`:
+Create `/Users/user.seto/lark-reply-desk/lib/larkDeepLink.ts`:
 
 ```ts
 export type DeepLinkRow = {
@@ -114,7 +114,7 @@ After converting to `<div role="button" ... group>`, wrap the badge + ↗ link i
 
 ## Test Plan (for REX / TDD)
 
-Write tests in `/Users/bryan.seto/lark-reply-desk/__tests__/larkDeepLink.test.ts` using vitest:
+Write tests in `/Users/user.seto/lark-reply-desk/__tests__/larkDeepLink.test.ts` using vitest:
 
 1. `larkDeepLink` returns message link when `flag_message_id` is present
 2. `larkDeepLink` falls back to chat link when `flag_message_id` is absent/null/undefined
@@ -139,7 +139,7 @@ No UI rendering tests needed — the logic lives entirely in the helper function
 
 ## Assumptions
 
-1. Bryan's org is on Lark global (larksuite.com) — confirmed from `mom_pipeline/executors.py`. Applink base: `https://applink.larksuite.com/`
+1. You's org is on Lark global (larksuite.com) — confirmed from `mom_pipeline/executors.py`. Applink base: `https://applink.larksuite.com/`
 2. `flag_message_id` is **optional** on queue rows — some rows will have it absent. The chat-link fallback handles those. `parent_message_id` (always present) is intentionally skipped as fallback — it may point to a different message context; chat-level fallback is safer.
 3. The change is purely cosmetic/UI — no daemon or API changes required
 4. Dev server at :3100 remains the QA target

@@ -1,6 +1,6 @@
 # Unflag Fix Implementation Plan
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
+> **Implementation note:** Use subagent-driven-development skill to implement this plan task-by-task.
 
 **Goal:** Fix two confirmed bugs in the Lark Reply Desk unflag flow — `unflag_message()` returns `False` on partial success (causing the UI to not drop the row), and the UI drops unflag commands silently on network error.
 
@@ -11,22 +11,22 @@
 **Tech Stack:** Python 3.11 (`python3`), pytest, Next.js 14 (App Router), TypeScript, lark-cli 1.0.47
 
 **Key Files:**
-- `/Users/bryan.seto/.hermes/profiles/bryan/daemons/lark-draft-pusher.py` — Bug A (daemon repo: `/Users/bryan.seto/.hermes/profiles/bryan/`)
-- `/Users/bryan.seto/.hermes/profiles/bryan/daemons/test_unflag_fix.py` — new test file (daemon repo)
-- `/Users/bryan.seto/.hermes/profiles/bryan/daemons/test_date_helpers.py` — existing Python test harness
-- `/Users/bryan.seto/lark-reply-desk/app/page.tsx` — Bug B (`doUnflag` at line 270, lark-reply-desk repo)
-- `/Users/bryan.seto/.hermes/profiles/bryan/state/lark-reply-desk-commands.jsonl` — command queue (append-only)
-- `/Users/bryan.seto/.hermes/profiles/bryan/state/lark-reply-desk-results.jsonl` — result records
-- `/Users/bryan.seto/.hermes/profiles/bryan/logs/lark-draft-pusher.log` — daemon logs
+- `/Users/user.seto/.hermes/profiles/user/daemons/lark-draft-pusher.py` — Bug A (daemon repo: `/Users/user.seto/.hermes/profiles/user/`)
+- `/Users/user.seto/.hermes/profiles/user/daemons/test_unflag_fix.py` — new test file (daemon repo)
+- `/Users/user.seto/.hermes/profiles/user/daemons/test_date_helpers.py` — existing Python test harness
+- `/Users/user.seto/lark-reply-desk/app/page.tsx` — Bug B (`doUnflag` at line 270, lark-reply-desk repo)
+- `/Users/user.seto/.hermes/profiles/user/state/lark-reply-desk-commands.jsonl` — command queue (append-only)
+- `/Users/user.seto/.hermes/profiles/user/state/lark-reply-desk-results.jsonl` — result records
+- `/Users/user.seto/.hermes/profiles/user/logs/lark-draft-pusher.log` — daemon logs
 
 **IMPORTANT — Two separate git repos:**
-- Daemon files live in git repo at: `/Users/bryan.seto/.hermes/profiles/bryan/`
-- UI files live in git repo at: `/Users/bryan.seto/lark-reply-desk/`
-- Never run `git -C /Users/bryan.seto/lark-reply-desk add <daemon-path>` — git will reject it with `fatal: outside repository`.
+- Daemon files live in git repo at: `/Users/user.seto/.hermes/profiles/user/`
+- UI files live in git repo at: `/Users/user.seto/lark-reply-desk/`
+- Never run `git -C /Users/user.seto/lark-reply-desk add <daemon-path>` — git will reject it with `fatal: outside repository`.
 
 **IMPORTANT — `python` vs `python3`:** `python` is not in PATH on this machine. Always use `python3`.
 
-**IMPORTANT — `npm` path:** `npm` is not in PATH. Always use `/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin/npm`.
+**IMPORTANT — `npm` path:** `npm` is not in PATH. Always use `/Users/user.seto/.nvm/versions/node/v24.13.1/bin/npm`.
 
 ---
 
@@ -55,7 +55,7 @@ After an unflag returns `error`, `doUnflag()` shows a toast but **does not call 
 
 ## Task 1: TDD Engineer — Write failing tests for `unflag_message()` partial-success logic
 
-**File to create:** `/Users/bryan.seto/.hermes/profiles/bryan/daemons/test_unflag_fix.py`
+**File to create:** `/Users/user.seto/.hermes/profiles/user/daemons/test_unflag_fix.py`
 
 **Context for implementer:**
 The `unflag_message(message_id)` function is at line 153 of `lark-draft-pusher.py`. It runs:
@@ -88,7 +88,7 @@ unflag_message = _mod.unflag_message
 **IMPORTANT — Smoke-test the import first:**
 Before writing any test, run:
 ```bash
-cd /Users/bryan.seto/.hermes/profiles/bryan/daemons && python3 -c "
+cd /Users/user.seto/.hermes/profiles/user/daemons && python3 -c "
 import importlib.util, pathlib
 spec = importlib.util.spec_from_file_location('lp', 'lark-draft-pusher.py')
 mod = importlib.util.module_from_spec(spec)
@@ -103,13 +103,13 @@ If this fails, report the error — do NOT proceed with the test file.
 
 **TDD steps:**
 1. Run the smoke-test import (above) — confirm it prints `import ok`
-2. Create `/Users/bryan.seto/.hermes/profiles/bryan/daemons/test_unflag_fix.py` with the import block above, then write 4 test cases using `unittest.mock.patch("subprocess.run")`:
+2. Create `/Users/user.seto/.hermes/profiles/user/daemons/test_unflag_fix.py` with the import block above, then write 4 test cases using `unittest.mock.patch("subprocess.run")`:
    - `test_full_success` — both message + feed return ok, returncode=0 → returns True
    - `test_partial_success_message_ok_feed_fails` — message ok, feed fails, returncode=1 → **must return True** (this is the bug; test will FAIL before the fix)
    - `test_full_fail_both_layers` — both failed, returncode=1 → returns False
    - `test_empty_message_id` — empty string → returns False (no subprocess call made)
 
-3. Run: `cd /Users/bryan.seto/.hermes/profiles/bryan/daemons && python3 -m pytest test_unflag_fix.py -v`
+3. Run: `cd /Users/user.seto/.hermes/profiles/user/daemons && python3 -m pytest test_unflag_fix.py -v`
 4. **Verify at least `test_partial_success_message_ok_feed_fails` FAILS** — this confirms the test catches the real bug
 
 **Expected failing output (before fix):**
@@ -119,20 +119,20 @@ FAILED test_unflag_fix.py::test_partial_success_message_ok_feed_fails
 
 **Commit (daemon repo):**
 ```bash
-git -C /Users/bryan.seto/.hermes/profiles/bryan add daemons/test_unflag_fix.py
-git -C /Users/bryan.seto/.hermes/profiles/bryan commit -m "test(unflag): add failing tests for partial-success logic"
+git -C /Users/user.seto/.hermes/profiles/user add daemons/test_unflag_fix.py
+git -C /Users/user.seto/.hermes/profiles/user commit -m "test(unflag): add failing tests for partial-success logic"
 ```
 
 ---
 
 ## Task 2: Code Engineer — Fix Bug A in `unflag_message()`
 
-**File to edit:** `/Users/bryan.seto/.hermes/profiles/bryan/daemons/lark-draft-pusher.py`
+**File to edit:** `/Users/user.seto/.hermes/profiles/user/daemons/lark-draft-pusher.py`
 **Lines to change:** 165–167 (the `if r.returncode != 0: ... return r.returncode == 0` block)
 
 **Verify the exact current code first:**
 ```bash
-sed -n '153,170p' /Users/bryan.seto/.hermes/profiles/bryan/daemons/lark-draft-pusher.py
+sed -n '153,170p' /Users/user.seto/.hermes/profiles/user/daemons/lark-draft-pusher.py
 ```
 
 **Old code (lines 165–167):**
@@ -166,25 +166,25 @@ sed -n '153,170p' /Users/bryan.seto/.hermes/profiles/bryan/daemons/lark-draft-pu
 
 **TDD steps:**
 1. Apply the patch to `lark-draft-pusher.py` lines 165–167
-2. Run: `cd /Users/bryan.seto/.hermes/profiles/bryan/daemons && python3 -m pytest test_unflag_fix.py -v`
+2. Run: `cd /Users/user.seto/.hermes/profiles/user/daemons && python3 -m pytest test_unflag_fix.py -v`
 3. **Verify ALL 4 tests PASS**
 4. Verify no regression: `python3 -m pytest test_date_helpers.py -v` — must all still pass
 5. Commit (daemon repo):
    ```bash
-   git -C /Users/bryan.seto/.hermes/profiles/bryan add daemons/lark-draft-pusher.py
-   git -C /Users/bryan.seto/.hermes/profiles/bryan commit -m "fix(daemon): unflag_message returns True on partial success (message layer ok, feed permission denied)"
+   git -C /Users/user.seto/.hermes/profiles/user add daemons/lark-draft-pusher.py
+   git -C /Users/user.seto/.hermes/profiles/user commit -m "fix(daemon): unflag_message returns True on partial success (message layer ok, feed permission denied)"
    ```
 
 ---
 
 ## Task 3: Code Engineer — Fix Bug B in `doUnflag()` (`app/page.tsx`)
 
-**File to edit:** `/Users/bryan.seto/lark-reply-desk/app/page.tsx`
+**File to edit:** `/Users/user.seto/lark-reply-desk/app/page.tsx`
 **Lines to change:** `doUnflag()` function at lines 270–297
 
 **Verify the exact current code first:**
 ```bash
-sed -n '270,297p' /Users/bryan.seto/lark-reply-desk/app/page.tsx
+sed -n '270,297p' /Users/user.seto/lark-reply-desk/app/page.tsx
 ```
 
 **Old code (lines 270–297):**
@@ -258,19 +258,19 @@ async function doUnflag() {
 ```
 
 **Verification steps:**
-1. `grep -n "dropCurrentRow(activeHandle)" /Users/bryan.seto/lark-reply-desk/app/page.tsx`
+1. `grep -n "dropCurrentRow(activeHandle)" /Users/user.seto/lark-reply-desk/app/page.tsx`
    — Expected: **3 matches** (unflagged, queued, error branches). Was 2 before fix.
-2. `grep -n "Removed locally" /Users/bryan.seto/lark-reply-desk/app/page.tsx`
+2. `grep -n "Removed locally" /Users/user.seto/lark-reply-desk/app/page.tsx`
    — Expected: 1 match.
 3. Build check (TypeScript):
    ```bash
-   /Users/bryan.seto/.nvm/versions/node/v24.13.1/bin/npm run build --prefix /Users/bryan.seto/lark-reply-desk 2>&1 | tail -20
+   /Users/user.seto/.nvm/versions/node/v24.13.1/bin/npm run build --prefix /Users/user.seto/lark-reply-desk 2>&1 | tail -20
    ```
    Expected: no errors, build succeeds.
 4. Commit (lark-reply-desk repo):
    ```bash
-   git -C /Users/bryan.seto/lark-reply-desk add app/page.tsx
-   git -C /Users/bryan.seto/lark-reply-desk commit -m "fix(ui): drop row on error status + clearer network-error toast in doUnflag"
+   git -C /Users/user.seto/lark-reply-desk add app/page.tsx
+   git -C /Users/user.seto/lark-reply-desk commit -m "fix(ui): drop row on error status + clearer network-error toast in doUnflag"
    ```
 
 ---
@@ -281,14 +281,14 @@ async function doUnflag() {
 
 ### 4a. Python unit tests (daemon repo)
 ```bash
-cd /Users/bryan.seto/.hermes/profiles/bryan/daemons
+cd /Users/user.seto/.hermes/profiles/user/daemons
 python3 -m pytest test_unflag_fix.py test_date_helpers.py -v
 ```
 Expected: all green, 4 new + all existing tests pass.
 
 ### 4b. Build check (lark-reply-desk repo)
 ```bash
-/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin/npm run build --prefix /Users/bryan.seto/lark-reply-desk 2>&1 | tail -30
+/Users/user.seto/.nvm/versions/node/v24.13.1/bin/npm run build --prefix /Users/user.seto/lark-reply-desk 2>&1 | tail -30
 ```
 Expected: no TypeScript errors.
 
@@ -300,7 +300,7 @@ Expected: daemon running.
 
 ### 4d. Log tail (no new errors since fix)
 ```bash
-tail -5 /Users/bryan.seto/.hermes/profiles/bryan/logs/lark-draft-pusher.log
+tail -5 /Users/user.seto/.hermes/profiles/user/logs/lark-draft-pusher.log
 ```
 Expected: no error lines since fix was applied.
 
@@ -336,8 +336,8 @@ Expected: `message_ok=True` and `PASS`.
 
 ### 4f. Git log check (two repos)
 ```bash
-echo "=== lark-reply-desk ===" && git -C /Users/bryan.seto/lark-reply-desk log --oneline -5
-echo "=== hermes daemon ===" && git -C /Users/bryan.seto/.hermes/profiles/bryan log --oneline -3
+echo "=== lark-reply-desk ===" && git -C /Users/user.seto/lark-reply-desk log --oneline -5
+echo "=== hermes daemon ===" && git -C /Users/user.seto/.hermes/profiles/user log --oneline -3
 ```
 Expected: top commit of `lark-reply-desk` is `fix(ui): drop row on error status...`; top 2 commits of hermes repo are the test + daemon fix commits. (Other pre-existing commits below are normal.)
 

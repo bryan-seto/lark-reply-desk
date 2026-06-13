@@ -6,11 +6,11 @@ export const runtime = "nodejs";
 
 // Correction bridge: applies a Flagged Desk correction by spawning the daemon
 // CLI (same pattern as /api/refine). Structured mode (set) is deterministic;
-// NL mode (nl) makes one Claude turn that distills Bryan's sentence into fields
+// NL mode (nl) makes one Claude turn that distills the user's sentence into fields
 // + a durable lesson. Both update the override store AND live-patch the queue.
 const PY = "/usr/bin/python3";
-const CLI = "/Users/bryan.seto/.hermes/profiles/bryan/daemons/followup_correct_cli.py";
-const NODE_BIN = "/Users/bryan.seto/.nvm/versions/node/v24.13.1/bin";
+const CLI = "process.env.HERMES_DAEMONS_DIR ?? (process.env.HOME + "/.hermes/profiles/default/daemons")/followup_correct_cli.py";
+const NODE_BIN = "process.env.NODE_BIN ?? "/usr/local/bin"";
 
 type CorrectBody = {
   handle?: string;
@@ -22,7 +22,7 @@ type CorrectBody = {
 function runCli(args: string[], timeoutMs = 60000): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
     const child = spawn(PY, [CLI, ...args], {
-      env: { ...process.env, HOME: "/Users/bryan.seto", PATH: `${NODE_BIN}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, HOME: process.env.HOME ?? "", PATH: `${NODE_BIN}:${process.env.PATH ?? ""}` },
     });
     let out = "";
     let err = "";
